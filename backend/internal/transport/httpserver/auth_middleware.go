@@ -40,6 +40,28 @@ func AuthRequired(authService *auth.Service) gin.HandlerFunc {
 	}
 }
 
+func OptionalAuth(authService *auth.Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authorization := c.GetHeader("Authorization")
+		if authorization == "" {
+			c.Next()
+			return
+		}
+
+		token := strings.TrimPrefix(authorization, "Bearer ")
+		if token == authorization {
+			c.Next()
+			return
+		}
+
+		claims, err := authService.Parse(token)
+		if err == nil {
+			c.Set(currentUserIDKey, claims.UserID)
+		}
+		c.Next()
+	}
+}
+
 func CurrentUserID(c *gin.Context) (uint, bool) {
 	value, exists := c.Get(currentUserIDKey)
 	if !exists {

@@ -45,6 +45,12 @@ export type UserStats = {
   followingCount: number
 }
 
+export type LikeStatus = {
+  videoId: number
+  liked: boolean
+  likeCount: number
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     headers: {
@@ -110,12 +116,46 @@ export function getVideo(id: string) {
   return request<Video>(`/videos/${id}`)
 }
 
+export function getVideoLikeStatus(id: string, token?: string) {
+  return request<LikeStatus>(`/videos/${id}/like-status`, token ? {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  } : undefined)
+}
+
+export function likeVideo(token: string, id: string) {
+  return request<LikeStatus>(`/videos/${id}/like`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  })
+}
+
+export function unlikeVideo(token: string, id: string) {
+  return request<LikeStatus>(`/videos/${id}/like`, {
+    method: 'DELETE',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  })
+}
+
 export function getUserStats(id: string) {
   return request<UserStats>(`/users/${id}/stats`)
 }
 
 export function listUserVideos(id: string, limit = 20) {
   return request<{ items: Video[] }>(`/users/${id}/videos?limit=${limit}`)
+}
+
+export function listLikedVideos(token: string, limit = 20) {
+  return request<{ items: Video[] }>(`/users/me/liked-videos?limit=${limit}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  })
 }
 
 export function uploadVideo(token: string, file: File) {

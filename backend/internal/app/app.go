@@ -7,6 +7,7 @@ import (
 
 	"feed-videos-system/backend/internal/config"
 	"feed-videos-system/backend/internal/domain/auth"
+	"feed-videos-system/backend/internal/domain/social"
 	"feed-videos-system/backend/internal/domain/user"
 	"feed-videos-system/backend/internal/domain/video"
 	"feed-videos-system/backend/internal/infrastructure/mysql"
@@ -21,11 +22,13 @@ type App struct {
 	Auth   *auth.Service
 	Users  *user.Service
 	Videos *video.Service
+	Social *social.Service
 }
 
 func New(cfg config.Config, db *gorm.DB) *App {
 	userRepo := mysql.NewUserRepository(db)
 	videoRepo := mysql.NewVideoRepository(db)
+	socialRepo := mysql.NewSocialRepository(db)
 	store := storage.NewLocalStore(cfg.StorageDir)
 
 	return &App{
@@ -35,6 +38,7 @@ func New(cfg config.Config, db *gorm.DB) *App {
 		Auth:    auth.NewService(cfg.JWTSecret),
 		Users:   user.NewService(userRepo),
 		Videos:  video.NewService(videoRepo),
+		Social:  social.NewService(socialRepo),
 	}
 }
 
