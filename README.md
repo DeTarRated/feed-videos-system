@@ -20,9 +20,43 @@ feed-videos-system/
     database.md
     interview-notes.md
   backend/
+    cmd/api/
+    internal/
+    migrations/
   frontend/
+    src/
 ```
 
 ## 当前阶段
 
-当前仓库先完成需求文档和架构文档，后续再进入后端和前端实现阶段。
+当前进入第一阶段 MVP 基础版。已完成文档初始化，并开始搭建后端 Go 服务骨架和前端 Vue 入口。
+
+## 本地开发
+
+### 后端
+
+```bash
+cd backend
+go mod tidy
+go run ./cmd/api
+```
+
+健康检查：
+
+```bash
+curl http://localhost:8080/healthz
+```
+
+### 前端
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+默认前端地址：`http://localhost:5173`。
+
+### 配置
+
+复制 `.env.example` 为 `.env` 后按本地环境调整。MVP 阶段默认使用本地 MySQL 和本地文件存储。
