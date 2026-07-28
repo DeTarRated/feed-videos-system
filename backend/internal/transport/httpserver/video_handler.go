@@ -7,16 +7,18 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"feed-videos-system/backend/internal/domain/social"
 	"feed-videos-system/backend/internal/domain/video"
 	"feed-videos-system/backend/internal/transport/httpserver/response"
 )
 
 type VideoHandler struct {
 	videos *video.Service
+	social *social.Service
 }
 
-func NewVideoHandler(videos *video.Service) *VideoHandler {
-	return &VideoHandler{videos: videos}
+func NewVideoHandler(videos *video.Service, socialService *social.Service) *VideoHandler {
+	return &VideoHandler{videos: videos, social: socialService}
 }
 
 type publishVideoRequest struct {
@@ -24,6 +26,11 @@ type publishVideoRequest struct {
 	Description string `json:"description"`
 	VideoURL    string `json:"videoUrl" binding:"required"`
 	CoverURL    string `json:"coverUrl"`
+}
+
+type videoDetailResponse struct {
+	*video.Video
+	CommentCount int64 `json:"commentCount"`
 }
 
 func (h *VideoHandler) Publish(c *gin.Context) {
@@ -69,7 +76,12 @@ func (h *VideoHandler) Detail(c *gin.Context) {
 		response.InternalError(c)
 		return
 	}
-	response.OK(c, item)
+	commentCount, err := h.social.CountVideoComments(c.Request.Context(), uint(id))
+	if err != nil {
+		response.InternalError(c)
+		return
+	}
+	response.OK(c, videoDetailResponse{Video: item, CommentCount: commentCount})
 }
 
 func (h *VideoHandler) Latest(c *gin.Context) {

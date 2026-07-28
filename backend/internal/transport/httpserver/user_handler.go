@@ -23,9 +23,9 @@ func NewUserHandler(users *user.Service, videos *video.Service) *UserHandler {
 
 type userStatsResponse struct {
 	UserID         uint  `json:"userId"`
-	WorksCount    int64 `json:"worksCount"`
-	LikeCount     int64 `json:"likeCount"`
-	FollowerCount int64 `json:"followerCount"`
+	WorksCount     int64 `json:"worksCount"`
+	LikeCount      int64 `json:"likeCount"`
+	FollowerCount  int64 `json:"followerCount"`
 	FollowingCount int64 `json:"followingCount"`
 }
 
@@ -52,9 +52,9 @@ func (h *UserHandler) Stats(c *gin.Context) {
 
 	response.OK(c, userStatsResponse{
 		UserID:         userID,
-		WorksCount:    worksCount,
-		LikeCount:     0,
-		FollowerCount: 0,
+		WorksCount:     worksCount,
+		LikeCount:      0,
+		FollowerCount:  0,
 		FollowingCount: 0,
 	})
 }

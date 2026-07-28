@@ -19,6 +19,7 @@ feed-videos-system/
     api.md
     database.md
     interview-notes.md
+    progress.md
   backend/
     cmd/api/
     internal/
@@ -29,7 +30,7 @@ feed-videos-system/
 
 ## 当前阶段
 
-当前进入第一阶段 MVP 基础版。已完成文档初始化，并开始搭建后端 Go 服务骨架和前端 Vue 入口。
+当前进入第二阶段互动版，点赞和评论模块已完成并验证，下一步实现关注模块。第一阶段 MVP 已完成并提交，详细任务状态见 [`docs/progress.md`](docs/progress.md)。
 
 ## 本地开发
 

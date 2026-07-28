@@ -85,3 +85,56 @@ func (r *SocialRepository) ListLikedVideos(ctx context.Context, userID uint, lim
 		Find(&items).Error
 	return items, err
 }
+
+func (r *SocialRepository) CreateComment(ctx context.Context, comment *social.Comment) error {
+	return r.db.WithContext(ctx).Create(comment).Error
+}
+
+func (r *SocialRepository) FindComment(ctx context.Context, commentID uint) (*social.Comment, error) {
+	var item social.Comment
+	err := r.db.WithContext(ctx).
+		Table("comments").
+		Select("comments.*, users.nickname AS user_nickname").
+		Joins("JOIN users ON users.id = comments.user_id").
+		Where("comments.id = ? AND comments.deleted_at IS NULL", commentID).
+		First(&item).Error
+	return &item, err
+}
+
+func (r *SocialRepository) ListComments(ctx context.Context, videoID uint, limit int) ([]social.Comment, error) {
+	var items []social.Comment
+	err := r.db.WithContext(ctx).
+		Table("comments").
+		Select("comments.*, users.nickname AS user_nickname").
+		Joins("JOIN users ON users.id = comments.user_id").
+		Where("comments.video_id = ? AND comments.deleted_at IS NULL", videoID).
+		Order("comments.created_at DESC").
+		Order("comments.id DESC").
+		Limit(limit).
+		Find(&items).Error
+	return items, err
+}
+
+func (r *SocialRepository) DeleteComment(ctx context.Context, commentID uint, userID uint) error {
+	now := time.Now()
+	result := r.db.WithContext(ctx).
+		Model(&social.Comment{}).
+		Where("id = ? AND user_id = ? AND deleted_at IS NULL", commentID, userID).
+		Updates(map[string]any{"deleted_at": now, "updated_at": now})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+func (r *SocialRepository) CountVideoComments(ctx context.Context, videoID uint) (int64, error) {
+	var count int64
+	err := r.db.WithContext(ctx).
+		Model(&social.Comment{}).
+		Where("video_id = ? AND deleted_at IS NULL", videoID).
+		Count(&count).Error
+	return count, err
+}

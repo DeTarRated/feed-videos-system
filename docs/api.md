@@ -16,256 +16,64 @@ http://localhost:8080/api/v1
 | `token` | 空 | 登录后保存 JWT |
 | `mediaBaseUrl` | `http://localhost:8080` | 静态媒体访问根地址 |
 
-### 响应格式
-
-| 类型 | 示例 |
-| --- | --- |
-| 成功 | `{"data": {...}}` |
-| 失败 | `{"error": "error message"}` |
-
 ### 登录鉴权
-
-需要登录的接口统一使用：
 
 ```text
 Authorization: Bearer {{token}}
 ```
 
----
+成功响应统一为 `{"data": ...}`，失败响应统一为 `{"error": "..."}`。
 
-## 1. 健康检查
+## 账号与视频基础接口
 
-| 项 | 内容 |
-| --- | --- |
-| 方法 | `GET` |
-| URL | `http://localhost:8080/healthz` |
-| 认证 | 无 |
-
-### 返回示例
-
-```json
-{
-  "status": "ok",
-  "timestamp": "2026-07-28T00:00:00Z"
-}
-```
-
----
-
-## 2. 账号接口
-
-### 2.1 注册
-
-| 项 | 内容 |
-| --- | --- |
-| 方法 | `POST` |
-| URL | `{{baseUrl}}/auth/register` |
-| 认证 | 无 |
-| Content-Type | `application/json` |
-
-#### 请求体
-
-| 字段 | 类型 | 必填 | 说明 |
+| 方法 | URL | 认证 | 说明 |
 | --- | --- | --- | --- |
-| `username` | string | 是 | 用户名 |
-| `password` | string | 是 | 密码，至少 6 位 |
-| `nickname` | string | 否 | 昵称，不传则默认使用用户名 |
+| `GET` | `/healthz` | 无 | 健康检查 |
+| `POST` | `/auth/register` | 无 | 注册 |
+| `POST` | `/auth/login` | 无 | 登录并获取 Token |
+| `GET` | `/videos` | 无 | 最新视频流 |
+| `GET` | `/videos/:id` | 无 | 视频详情 |
+| `POST` | `/videos` | 必须 | 发布视频 |
+| `POST` | `/uploads/videos` | 必须 | 上传视频 |
+| `POST` | `/uploads/covers` | 必须 | 上传封面 |
+| `GET` | `/users/:id/stats` | 无 | 用户主页统计 |
+| `GET` | `/users/:id/videos` | 无 | 作者作品列表 |
 
-#### 请求示例
+### 视频详情响应
 
-```json
-{
-  "username": "demo",
-  "password": "123456",
-  "nickname": "Demo"
-}
-```
-
-#### 返回示例
+视频详情响应在基础视频字段之外返回当前未删除评论总数：
 
 ```json
 {
   "data": {
-    "token": "eyJhbGciOi...",
-    "user": {
-      "id": 1,
-      "username": "demo",
-      "nickname": "Demo",
-      "avatarUrl": "",
-      "bio": ""
-    }
+    "id": 1,
+    "authorId": 2,
+    "title": "示例视频",
+    "commentCount": 12
   }
 }
 ```
 
-#### Apifox 检查点
+## 点赞接口
 
-| 项 | 说明 |
-| --- | --- |
-| `data.token` | 保存到环境变量 `token` |
-| `data.user.id` | 非空 |
-| `data.user.username` | 等于请求用户名 |
-
----
-
-### 2.2 登录
-
-| 项 | 内容 |
-| --- | --- |
-| 方法 | `POST` |
-| URL | `{{baseUrl}}/auth/login` |
-| 认证 | 无 |
-| Content-Type | `application/json` |
-
-#### 请求体
-
-| 字段 | 类型 | 必填 | 说明 |
+| 方法 | URL | 认证 | 说明 |
 | --- | --- | --- | --- |
-| `username` | string | 是 | 用户名 |
-| `password` | string | 是 | 密码 |
+| `POST` | `{{baseUrl}}/videos/:id/like` | 必须 | 点赞视频，重复调用幂等 |
+| `DELETE` | `{{baseUrl}}/videos/:id/like` | 必须 | 取消点赞，重复调用幂等 |
+| `GET` | `{{baseUrl}}/videos/:id/like-status` | 可选 | 查询当前用户点赞状态和总数 |
+| `GET` | `{{baseUrl}}/users/me/liked-videos` | 必须 | 我的点赞视频列表 |
 
-#### 请求示例
+### 点赞/取消点赞请求
 
-```json
-{
-  "username": "demo",
-  "password": "123456"
-}
-```
-
-#### 返回示例
-
-```json
-{
-  "data": {
-    "token": "eyJhbGciOi...",
-    "user": {
-      "id": 1,
-      "username": "demo",
-      "nickname": "Demo",
-      "avatarUrl": "",
-      "bio": ""
-    }
-  }
-}
-```
-
-#### Apifox 检查点
-
-| 项 | 说明 |
-| --- | --- |
-| `data.token` | 保存到环境变量 `token` |
-| `data.user.username` | 等于 `demo` |
-
----
-
-## 3. 上传接口
-
-上传接口都需要登录。返回的 `url` 是相对路径，前端或 Apifox 访问静态资源时拼接 `mediaBaseUrl`。
-
-### 3.1 上传视频文件
-
-| 项 | 内容 |
-| --- | --- |
-| 方法 | `POST` |
-| URL | `{{baseUrl}}/uploads/videos` |
-| 认证 | `Authorization: Bearer {{token}}` |
-| Body 类型 | `multipart/form-data` |
-| 文件字段 | `file` |
-
-#### 字段说明
-
-| 字段 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `file` | file | 是 | 视频文件，支持 `.mp4 .mov .webm .mkv .m4v` |
-
-#### 请求示例
-
-| 字段 | 值 |
-| --- | --- |
-| `file` | 选择一个视频文件 |
-
-#### 返回示例
-
-```json
-{
-  "data": {
-    "url": "/media/videos/20260728/1710000000000000000.mp4",
-    "name": "1710000000000000000.mp4",
-    "size": 12345678
-  }
-}
-```
-
-#### Apifox 检查点
-
-| 项 | 说明 |
-| --- | --- |
-| `data.url` | 保存给后续发布视频使用 |
-| `data.url` 访问 | 组合 `{{mediaBaseUrl}}` 后应能直接访问 |
-
----
-
-### 3.2 上传封面文件
-
-| 项 | 内容 |
-| --- | --- |
-| 方法 | `POST` |
-| URL | `{{baseUrl}}/uploads/covers` |
-| 认证 | `Authorization: Bearer {{token}}` |
-| Body 类型 | `multipart/form-data` |
-| 文件字段 | `file` |
-
-#### 字段说明
-
-| 字段 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `file` | file | 是 | 图片文件，支持 `.jpg .jpeg .png .webp .gif` |
-
-#### 请求示例
-
-| 字段 | 值 |
-| --- | --- |
-| `file` | 选择一个图片文件 |
-
-#### 返回示例
-
-```json
-{
-  "data": {
-    "url": "/media/covers/20260728/1710000000000000001.jpg",
-    "name": "1710000000000000001.jpg",
-    "size": 123456
-  }
-}
-```
-
-#### Apifox 检查点
-
-| 项 | 说明 |
-| --- | --- |
-| `data.url` | 保存给后续发布视频使用 |
-| `data.url` 访问 | 组合 `{{mediaBaseUrl}}` 后应能直接访问 |
-
----
-
-## 4. 点赞接口
-
-### 4.1 点赞视频
-
-| 项 | 内容 |
-| --- | --- |
-| 方法 | `POST` |
-| URL | `{{baseUrl}}/videos/:id/like` |
-| 认证 | `Authorization: Bearer {{token}}` |
-
-#### 路径参数
+路径参数：
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `id` | int | 是 | 视频 ID |
 
-#### 返回示例
+点赞和取消点赞无请求 Body。
+
+返回示例：
 
 ```json
 {
@@ -277,61 +85,33 @@ Authorization: Bearer {{token}}
 }
 ```
 
-### 4.2 取消点赞
+### 点赞状态
 
-| 项 | 内容 |
-| --- | --- |
-| 方法 | `DELETE` |
-| URL | `{{baseUrl}}/videos/:id/like` |
-| 认证 | `Authorization: Bearer {{token}}` |
+登录用户查询时必须带：
 
-#### 返回示例
-
-```json
-{
-  "data": {
-    "videoId": 1,
-    "liked": false,
-    "likeCount": 0
-  }
-}
+```text
+Authorization: Bearer {{token}}
 ```
 
-### 4.3 查询点赞状态
+匿名查询也可以执行，但 `liked` 固定为 `false`，只能查看公共点赞数。
 
-| 项 | 内容 |
-| --- | --- |
-| 方法 | `GET` |
-| URL | `{{baseUrl}}/videos/:id/like-status` |
-| 认证 | 可选，不登录也可查点赞数 |
+## 评论接口
 
-#### 返回示例
+| 方法 | URL | 认证 | Body | 说明 |
+| --- | --- | --- | --- | --- |
+| `GET` | `{{baseUrl}}/videos/:id/comments` | 无 | 无 | 评论列表 |
+| `POST` | `{{baseUrl}}/videos/:id/comments` | 必须 | JSON | 发表评论 |
+| `DELETE` | `{{baseUrl}}/videos/:id/comments/:commentId` | 必须 | 无 | 删除自己的评论 |
 
-```json
-{
-  "data": {
-    "videoId": 1,
-    "liked": true,
-    "likeCount": 3
-  }
-}
-```
+### 评论列表
 
-### 4.4 我的点赞视频列表
-
-| 项 | 内容 |
-| --- | --- |
-| 方法 | `GET` |
-| URL | `{{baseUrl}}/users/me/liked-videos` |
-| 认证 | `Authorization: Bearer {{token}}` |
-
-#### Query 参数
+Query 参数：
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- |
-| `limit` | int | 否 | `20` | 返回数量上限 |
+| `limit` | int | 否 | `50` | 最大 100 |
 
-#### 返回示例
+返回示例：
 
 ```json
 {
@@ -339,12 +119,10 @@ Authorization: Bearer {{token}}
     "items": [
       {
         "id": 1,
-        "authorId": 1,
-        "title": "第一个视频",
-        "description": "MVP 上传发布测试",
-        "videoUrl": "/media/videos/20260728/1710000000000000000.mp4",
-        "coverUrl": "/media/covers/20260728/1710000000000000001.jpg",
-        "publishedAt": "2026-07-28T00:00:00Z",
+        "userId": 2,
+        "userNickname": "小明",
+        "videoId": 1,
+        "content": "很不错的视频",
         "createdAt": "2026-07-28T00:00:00Z",
         "updatedAt": "2026-07-28T00:00:00Z"
       }
@@ -353,107 +131,58 @@ Authorization: Bearer {{token}}
 }
 ```
 
----
+### 发表评论
 
-## 5. 视频接口
+Headers：
 
-### 5.1 发布视频
+```text
+Content-Type: application/json
+Authorization: Bearer {{token}}
+```
 
-| 项 | 内容 |
-| --- | --- |
-| 方法 | `POST` |
-| URL | `{{baseUrl}}/videos` |
-| 认证 | `Authorization: Bearer {{token}}` |
-| Content-Type | `application/json` |
-
-#### 请求体
-
-| 字段 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `title` | string | 是 | 视频标题 |
-| `description` | string | 否 | 视频描述 |
-| `videoUrl` | string | 是 | 上传视频返回的 `url` |
-| `coverUrl` | string | 否 | 上传封面返回的 `url` |
-
-#### 请求示例
+Body JSON：
 
 ```json
 {
-  "title": "第一个视频",
-  "description": "MVP 上传发布测试",
-  "videoUrl": "/media/videos/20260728/1710000000000000000.mp4",
-  "coverUrl": "/media/covers/20260728/1710000000000000001.jpg"
+  "content": "很不错的视频"
 }
 ```
 
-#### 返回示例
+规则：
+
+- `content` 必填。
+- 去除首尾空白后不能为空。
+- 最大 500 个字符。
+
+### 删除评论
+
+Headers：
+
+```text
+Authorization: Bearer {{token}}
+```
+
+只能删除当前登录用户自己发表的评论。成功返回：
 
 ```json
 {
   "data": {
-    "id": 1,
-    "authorId": 1,
-    "title": "第一个视频",
-    "description": "MVP 上传发布测试",
-    "videoUrl": "/media/videos/20260728/1710000000000000000.mp4",
-    "coverUrl": "/media/covers/20260728/1710000000000000001.jpg",
-    "publishedAt": "2026-07-28T00:00:00Z",
-    "createdAt": "2026-07-28T00:00:00Z",
-    "updatedAt": "2026-07-28T00:00:00Z"
+    "deleted": true
   }
 }
 ```
 
-### 5.2 最新视频流
+## 用户接口
 
-| 项 | 内容 |
-| --- | --- |
-| 方法 | `GET` |
-| URL | `{{baseUrl}}/videos` |
-| 认证 | 无 |
+| 方法 | URL | 认证 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `{{baseUrl}}/users/:id/stats` | 无 | 返回作品数、获赞数、粉丝数、关注数 |
+| `GET` | `{{baseUrl}}/users/:id/videos` | 无 | 返回作者作品 |
 
-#### Query 参数
+当前用户统计中的 `likeCount` 已接入真实点赞数据，关注相关字段将在关注模块完成后接入。
 
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
-| --- | --- | --- | --- | --- |
-| `limit` | int | 否 | `20` | 返回数量上限 |
+## 静态资源
 
-### 5.3 视频详情
-
-| 项 | 内容 |
-| --- | --- |
-| 方法 | `GET` |
-| URL | `{{baseUrl}}/videos/:id` |
-| 认证 | 无 |
-
----
-
-## 6. 用户接口
-
-### 6.1 用户主页统计
-
-| 项 | 内容 |
-| --- | --- |
-| 方法 | `GET` |
-| URL | `{{baseUrl}}/users/:id/stats` |
-| 认证 | 无 |
-
-### 6.2 作者作品列表
-
-| 项 | 内容 |
-| --- | --- |
-| 方法 | `GET` |
-| URL | `{{baseUrl}}/users/:id/videos` |
-| 认证 | 无 |
-
----
-
-## 7. 静态资源访问
-
-上传接口返回的 `/media/...` URL 由后端静态资源服务提供。
-
-| 项 | 内容 |
-| --- | --- |
-| 访问地址示例 | `http://localhost:8080/media/videos/20260728/1710000000000000000.mp4` |
-| 验证方式 | 在浏览器或 Apifox 中直接打开该地址 |
-| 预期结果 | 返回对应文件内容 |
+```text
+http://localhost:8080/media/videos/20260728/example.mp4
+```

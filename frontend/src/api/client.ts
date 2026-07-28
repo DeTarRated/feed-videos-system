@@ -29,6 +29,7 @@ export type Video = {
   publishedAt: string
   createdAt: string
   updatedAt: string
+  commentCount?: number
 }
 
 export type UploadResult = {
@@ -49,6 +50,16 @@ export type LikeStatus = {
   videoId: number
   liked: boolean
   likeCount: number
+}
+
+export type Comment = {
+  id: number
+  userId: number
+  userNickname: string
+  videoId: number
+  content: string
+  createdAt: string
+  updatedAt: string
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -135,6 +146,29 @@ export function likeVideo(token: string, id: string) {
 
 export function unlikeVideo(token: string, id: string) {
   return request<LikeStatus>(`/videos/${id}/like`, {
+    method: 'DELETE',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  })
+}
+
+export function listComments(id: string, limit = 50) {
+  return request<{ items: Comment[] }>(`/videos/${id}/comments?limit=${limit}`)
+}
+
+export function createComment(token: string, id: string, content: string) {
+  return request<Comment>(`/videos/${id}/comments`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ content }),
+  })
+}
+
+export function deleteComment(token: string, videoId: string, commentId: number) {
+  return request<{ deleted: boolean }>(`/videos/${videoId}/comments/${commentId}`, {
     method: 'DELETE',
     headers: {
       Authorization: `Bearer ${token}`,

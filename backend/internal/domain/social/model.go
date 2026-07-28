@@ -20,3 +20,18 @@ type LikeStatus struct {
 	Liked     bool  `json:"liked"`
 	LikeCount int64 `json:"likeCount"`
 }
+
+type Comment struct {
+	ID           uint       `gorm:"primaryKey" json:"id"`
+	UserID       uint       `gorm:"index;not null" json:"userId"`
+	UserNickname string     `gorm:"column:user_nickname;->" json:"userNickname"`
+	VideoID      uint       `gorm:"index;not null" json:"videoId"`
+	Content      string     `gorm:"size:500;not null" json:"content"`
+	CreatedAt    time.Time  `json:"createdAt"`
+	UpdatedAt    time.Time  `json:"updatedAt"`
+	DeletedAt    *time.Time `gorm:"index" json:"-"`
+}
+
+func (Comment) TableName() string {
+	return "comments"
+}

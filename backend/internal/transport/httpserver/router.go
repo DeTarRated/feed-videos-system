@@ -19,9 +19,10 @@ func NewRouter(application *app.App) http.Handler {
 	engine.Static("/media", application.Config.StorageDir)
 
 	authHandler := NewAuthHandler(application.Users, application.Auth)
-	videoHandler := NewVideoHandler(application.Videos)
+	videoHandler := NewVideoHandler(application.Videos, application.Social)
 	userHandler := NewUserHandler(application.Users, application.Videos)
 	likeHandler := NewLikeHandler(application.Social)
+	commentHandler := NewCommentHandler(application.Social)
 	uploadHandler := NewUploadHandler(application.Storage)
 
 	api := engine.Group("/api/v1")
@@ -35,6 +36,9 @@ func NewRouter(application *app.App) http.Handler {
 		api.GET("/videos/:id/like-status", OptionalAuth(application.Auth), likeHandler.Status)
 		api.POST("/videos/:id/like", AuthRequired(application.Auth), likeHandler.Like)
 		api.DELETE("/videos/:id/like", AuthRequired(application.Auth), likeHandler.Unlike)
+		api.GET("/videos/:id/comments", commentHandler.List)
+		api.POST("/videos/:id/comments", AuthRequired(application.Auth), commentHandler.Create)
+		api.DELETE("/videos/:id/comments/:commentId", AuthRequired(application.Auth), commentHandler.Delete)
 		api.POST("/videos", AuthRequired(application.Auth), videoHandler.Publish)
 
 		api.GET("/users/:id/stats", userHandler.Stats)
