@@ -6,6 +6,7 @@
 - `videos`：视频基础信息。
 - `likes`：用户与视频的点赞关系，支持软删除。
 - `comments`：视频评论，支持软删除。
+- `follows`：用户关注关系，支持软删除。
 
 ## users
 
@@ -69,10 +70,30 @@
 
 评论删除使用软删除，并且后端要求 `comment_id` 和当前用户 ID 同时匹配，保证只能删除自己的评论。
 
+## follows
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | bigint unsigned PK | 关注关系 ID |
+| `follower_id` | bigint unsigned | 关注发起用户 |
+| `following_id` | bigint unsigned | 被关注用户 |
+| `created_at` | datetime(3) | 首次关注时间 |
+| `updated_at` | datetime(3) | 最近状态变更时间 |
+| `deleted_at` | datetime(3) nullable | 取消关注时间，非空表示已取消 |
+
+索引：
+
+- `uk_follows_follower_following(follower_id, following_id)`：保证同一用户对同一目标只有一条关系记录。
+- `idx_follows_follower_deleted(follower_id, deleted_at)`：查询关注列表和关注数。
+- `idx_follows_following_deleted(following_id, deleted_at)`：查询粉丝列表和粉丝数。
+
+关注采用软删除式状态：关注恢复记录，取消关注写入 `deleted_at`，重复操作保持幂等。数据库和领域服务都禁止用户关注自己。
+
 ## 迁移文件
 
 - `001_init_users_videos.sql`
 - `002_init_social_likes.sql`
 - `003_init_social_comments.sql`
+- `004_init_social_follows.sql`
 
 当前 Docker Compose 只会自动执行首次初始化时挂载的迁移文件；已有 MySQL volume 需要手动执行新增迁移。

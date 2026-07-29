@@ -52,6 +52,20 @@ export type LikeStatus = {
   likeCount: number
 }
 
+export type FollowStatus = {
+  userId: number
+  following: boolean
+  followerCount: number
+}
+
+export type FollowUser = {
+  id: number
+  username: string
+  nickname: string
+  avatarUrl: string
+  bio: string
+}
+
 export type Comment = {
   id: number
   userId: number
@@ -182,6 +196,40 @@ export function getUserStats(id: string) {
 
 export function listUserVideos(id: string, limit = 20) {
   return request<{ items: Video[] }>(`/users/${id}/videos?limit=${limit}`)
+}
+
+export function getFollowStatus(id: string, token?: string) {
+  return request<FollowStatus>(`/users/${id}/follow-status`, token ? {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  } : undefined)
+}
+
+export function followUser(token: string, id: string) {
+  return request<FollowStatus>(`/users/${id}/follow`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  })
+}
+
+export function unfollowUser(token: string, id: string) {
+  return request<FollowStatus>(`/users/${id}/follow`, {
+    method: 'DELETE',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  })
+}
+
+export function listFollowers(id: string, limit = 50) {
+  return request<{ items: FollowUser[] }>(`/users/${id}/followers?limit=${limit}`)
+}
+
+export function listFollowing(id: string, limit = 50) {
+  return request<{ items: FollowUser[] }>(`/users/${id}/following?limit=${limit}`)
 }
 
 export function listLikedVideos(token: string, limit = 20) {

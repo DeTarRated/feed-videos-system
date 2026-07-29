@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"feed-videos-system/backend/internal/domain/social"
 	"feed-videos-system/backend/internal/domain/user"
 	"feed-videos-system/backend/internal/domain/video"
 	"feed-videos-system/backend/internal/transport/httpserver/response"
@@ -15,10 +16,11 @@ import (
 type UserHandler struct {
 	users  *user.Service
 	videos *video.Service
+	social *social.Service
 }
 
-func NewUserHandler(users *user.Service, videos *video.Service) *UserHandler {
-	return &UserHandler{users: users, videos: videos}
+func NewUserHandler(users *user.Service, videos *video.Service, socialService *social.Service) *UserHandler {
+	return &UserHandler{users: users, videos: videos, social: socialService}
 }
 
 type userStatsResponse struct {
@@ -50,12 +52,28 @@ func (h *UserHandler) Stats(c *gin.Context) {
 		return
 	}
 
+	likeCount, err := h.social.CountAuthorReceivedLikes(c.Request.Context(), userID)
+	if err != nil {
+		response.InternalError(c)
+		return
+	}
+	followerCount, err := h.social.CountFollowers(c.Request.Context(), userID)
+	if err != nil {
+		response.InternalError(c)
+		return
+	}
+	followingCount, err := h.social.CountFollowing(c.Request.Context(), userID)
+	if err != nil {
+		response.InternalError(c)
+		return
+	}
+
 	response.OK(c, userStatsResponse{
 		UserID:         userID,
 		WorksCount:     worksCount,
-		LikeCount:      0,
-		FollowerCount:  0,
-		FollowingCount: 0,
+		LikeCount:      likeCount,
+		FollowerCount:  followerCount,
+		FollowingCount: followingCount,
 	})
 }
 

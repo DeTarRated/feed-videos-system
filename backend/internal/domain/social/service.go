@@ -114,3 +114,88 @@ func (s *Service) CountVideoComments(ctx context.Context, videoID uint) (int64, 
 	}
 	return s.repo.CountVideoComments(ctx, videoID)
 }
+
+func (s *Service) FollowUser(ctx context.Context, followerID uint, followingID uint) (*FollowStatus, error) {
+	if err := validateFollowIDs(followerID, followingID); err != nil {
+		return nil, err
+	}
+	if err := s.repo.FollowUser(ctx, followerID, followingID); err != nil {
+		return nil, err
+	}
+	return s.FollowStatus(ctx, followerID, followingID)
+}
+
+func (s *Service) UnfollowUser(ctx context.Context, followerID uint, followingID uint) (*FollowStatus, error) {
+	if err := validateFollowIDs(followerID, followingID); err != nil {
+		return nil, err
+	}
+	if err := s.repo.UnfollowUser(ctx, followerID, followingID); err != nil {
+		return nil, err
+	}
+	return s.FollowStatus(ctx, followerID, followingID)
+}
+
+func (s *Service) FollowStatus(ctx context.Context, followerID uint, followingID uint) (*FollowStatus, error) {
+	if followingID == 0 {
+		return nil, fmt.Errorf("following user id is required")
+	}
+
+	following := false
+	var err error
+	if followerID > 0 && followerID != followingID {
+		following, err = s.repo.IsFollowing(ctx, followerID, followingID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	followerCount, err := s.repo.CountFollowers(ctx, followingID)
+	if err != nil {
+		return nil, err
+	}
+	return &FollowStatus{UserID: followingID, Following: following, FollowerCount: followerCount}, nil
+}
+
+func (s *Service) CountFollowers(ctx context.Context, userID uint) (int64, error) {
+	if userID == 0 {
+		return 0, fmt.Errorf("user id is required")
+	}
+	return s.repo.CountFollowers(ctx, userID)
+}
+
+func (s *Service) CountFollowing(ctx context.Context, userID uint) (int64, error) {
+	if userID == 0 {
+		return 0, fmt.Errorf("user id is required")
+	}
+	return s.repo.CountFollowing(ctx, userID)
+}
+
+func (s *Service) Followers(ctx context.Context, userID uint, limit int) ([]FollowUser, error) {
+	if userID == 0 {
+		return nil, fmt.Errorf("user id is required")
+	}
+	return s.repo.ListFollowers(ctx, userID, normalizeFollowLimit(limit))
+}
+
+func (s *Service) Following(ctx context.Context, userID uint, limit int) ([]FollowUser, error) {
+	if userID == 0 {
+		return nil, fmt.Errorf("user id is required")
+	}
+	return s.repo.ListFollowing(ctx, userID, normalizeFollowLimit(limit))
+}
+
+func validateFollowIDs(followerID uint, followingID uint) error {
+	if followerID == 0 || followingID == 0 {
+		return fmt.Errorf("follower id and following id are required")
+	}
+	if followerID == followingID {
+		return fmt.Errorf("cannot follow yourself")
+	}
+	return nil
+}
+
+func normalizeFollowLimit(limit int) int {
+	if limit <= 0 || limit > 100 {
+		return 50
+	}
+	return limit
+}

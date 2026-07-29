@@ -221,6 +221,7 @@ button:disabled {
   color: #4b5563;
 }
 
+.profile-grid {
   display: grid;
   gap: 16px;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -254,6 +255,31 @@ button:disabled {
 .stats-list dd {
   margin: 0;
   font-weight: 700;
+}
+
+.user-list {
+  display: grid;
+  gap: 10px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.user-list li {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+}
+
+.user-list a {
+  font-weight: 700;
+  color: #111827;
+}
+
+.user-list span {
+  color: #6b7280;
 }
 
 .video-list img {

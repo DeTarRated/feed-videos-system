@@ -178,8 +178,71 @@ Authorization: Bearer {{token}}
 | --- | --- | --- | --- |
 | `GET` | `{{baseUrl}}/users/:id/stats` | 无 | 返回作品数、获赞数、粉丝数、关注数 |
 | `GET` | `{{baseUrl}}/users/:id/videos` | 无 | 返回作者作品 |
+| `GET` | `{{baseUrl}}/users/:id/follow-status` | 可选 | 查询当前登录用户是否关注目标用户和目标粉丝数 |
+| `POST` | `{{baseUrl}}/users/:id/follow` | 必须 | 关注用户，重复调用幂等 |
+| `DELETE` | `{{baseUrl}}/users/:id/follow` | 必须 | 取消关注，重复调用幂等 |
+| `GET` | `{{baseUrl}}/users/:id/followers` | 无 | 粉丝列表 |
+| `GET` | `{{baseUrl}}/users/:id/following` | 无 | 关注列表 |
 
-当前用户统计中的 `likeCount` 已接入真实点赞数据，关注相关字段将在关注模块完成后接入。
+用户统计中的 `likeCount`、`followerCount`、`followingCount` 均来自真实关系数据。
+
+### 关注状态
+
+登录用户查询时建议带：
+
+```text
+Authorization: Bearer {{token}}
+```
+
+匿名查询也可以执行，但 `following` 固定为 `false`，只能查看目标用户粉丝数。
+
+返回示例：
+
+```json
+{
+  "data": {
+    "userId": 2,
+    "following": true,
+    "followerCount": 3
+  }
+}
+```
+
+### 关注/取消关注
+
+Headers：
+
+```text
+Authorization: Bearer {{token}}
+```
+
+关注和取消关注无请求 Body。不能关注自己，目标用户不存在时返回 404。
+
+### 粉丝和关注列表
+
+Query 参数：
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `limit` | int | 否 | `50` | 最大 100 |
+
+返回示例：
+
+```json
+{
+  "data": {
+    "items": [
+      {
+        "id": 2,
+        "username": "alice",
+        "nickname": "Alice",
+        "avatarUrl": "",
+        "bio": ""
+      }
+    ]
+  }
+}
+```
 
 ## 静态资源
 

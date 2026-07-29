@@ -18,4 +18,11 @@ type Repository interface {
 	ListComments(ctx context.Context, videoID uint, limit int) ([]Comment, error)
 	DeleteComment(ctx context.Context, commentID uint, userID uint) error
 	CountVideoComments(ctx context.Context, videoID uint) (int64, error)
+	FollowUser(ctx context.Context, followerID uint, followingID uint) error
+	UnfollowUser(ctx context.Context, followerID uint, followingID uint) error
+	IsFollowing(ctx context.Context, followerID uint, followingID uint) (bool, error)
+	CountFollowers(ctx context.Context, userID uint) (int64, error)
+	CountFollowing(ctx context.Context, userID uint) (int64, error)
+	ListFollowers(ctx context.Context, userID uint, limit int) ([]FollowUser, error)
+	ListFollowing(ctx context.Context, userID uint, limit int) ([]FollowUser, error)
 }

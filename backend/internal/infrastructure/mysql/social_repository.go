@@ -138,3 +138,83 @@ func (r *SocialRepository) CountVideoComments(ctx context.Context, videoID uint)
 		Count(&count).Error
 	return count, err
 }
+
+func (r *SocialRepository) FollowUser(ctx context.Context, followerID uint, followingID uint) error {
+	now := time.Now()
+	item := social.Follow{
+		FollowerID:  followerID,
+		FollowingID: followingID,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "follower_id"}, {Name: "following_id"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"deleted_at": nil,
+			"updated_at": now,
+		}),
+	}).Create(&item).Error
+}
+
+func (r *SocialRepository) UnfollowUser(ctx context.Context, followerID uint, followingID uint) error {
+	now := time.Now()
+	return r.db.WithContext(ctx).
+		Model(&social.Follow{}).
+		Where("follower_id = ? AND following_id = ? AND deleted_at IS NULL", followerID, followingID).
+		Updates(map[string]any{"deleted_at": now, "updated_at": now}).Error
+}
+
+func (r *SocialRepository) IsFollowing(ctx context.Context, followerID uint, followingID uint) (bool, error) {
+	var count int64
+	err := r.db.WithContext(ctx).
+		Model(&social.Follow{}).
+		Where("follower_id = ? AND following_id = ? AND deleted_at IS NULL", followerID, followingID).
+		Count(&count).Error
+	return count > 0, err
+}
+
+func (r *SocialRepository) CountFollowers(ctx context.Context, userID uint) (int64, error) {
+	var count int64
+	err := r.db.WithContext(ctx).
+		Model(&social.Follow{}).
+		Where("following_id = ? AND deleted_at IS NULL", userID).
+		Count(&count).Error
+	return count, err
+}
+
+func (r *SocialRepository) CountFollowing(ctx context.Context, userID uint) (int64, error) {
+	var count int64
+	err := r.db.WithContext(ctx).
+		Model(&social.Follow{}).
+		Where("follower_id = ? AND deleted_at IS NULL", userID).
+		Count(&count).Error
+	return count, err
+}
+
+func (r *SocialRepository) ListFollowers(ctx context.Context, userID uint, limit int) ([]social.FollowUser, error) {
+	var items []social.FollowUser
+	err := r.db.WithContext(ctx).
+		Table("users").
+		Select("users.id, users.username, users.nickname, users.avatar_url, users.bio").
+		Joins("JOIN follows ON follows.follower_id = users.id").
+		Where("follows.following_id = ? AND follows.deleted_at IS NULL", userID).
+		Order("follows.updated_at DESC").
+		Order("users.id DESC").
+		Limit(limit).
+		Scan(&items).Error
+	return items, err
+}
+
+func (r *SocialRepository) ListFollowing(ctx context.Context, userID uint, limit int) ([]social.FollowUser, error) {
+	var items []social.FollowUser
+	err := r.db.WithContext(ctx).
+		Table("users").
+		Select("users.id, users.username, users.nickname, users.avatar_url, users.bio").
+		Joins("JOIN follows ON follows.following_id = users.id").
+		Where("follows.follower_id = ? AND follows.deleted_at IS NULL", userID).
+		Order("follows.updated_at DESC").
+		Order("users.id DESC").
+		Limit(limit).
+		Scan(&items).Error
+	return items, err
+}
