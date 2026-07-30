@@ -63,6 +63,26 @@ func NewConsumer(conn *Connection, queue, exchange, routingKey string) *Consumer
 	return &Consumer{conn: conn, queue: queue, exchange: exchange, routing: routingKey}
 }
 
+func (p *Publisher) PublishCommentEvent(ctx context.Context, event social.Event) error {
+	if p == nil || p.conn == nil {
+		return nil
+	}
+	ch, err := p.conn.Channel()
+	if err != nil {
+		return err
+	}
+	defer ch.Close()
+
+	if err := DeclareExchange(ch, p.exchange); err != nil {
+		return err
+	}
+	body, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	return PublishJSON(ctx, ch, p.exchange, p.routing, body)
+}
+
 func (p *Publisher) PublishLikeEvent(ctx context.Context, event social.Event) error {
 	if p == nil || p.conn == nil {
 		return nil

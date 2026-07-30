@@ -26,8 +26,10 @@ type App struct {
 	Storage          *storage.LocalStore
 	VideoDetailCache *cache.VideoDetailCache
 	HotVideoRank     *cache.HotVideoRank
+	HotMinuteWindow  *cache.HotMinuteWindow
 	HotFeedSnapshots *cache.HotFeedSnapshotStore
 	LikeStateCache   *cache.LikeStateCache
+	CommentCache     *cache.CommentCache
 
 	Auth   *auth.Service
 	Users  *user.Service
@@ -42,6 +44,8 @@ func New(cfg config.Config, db *gorm.DB, redisClient *goredis.Client, mqConn *mq
 	store := storage.NewLocalStore(cfg.StorageDir)
 	publisher := mq.NewPublisher(mqConn, cfg.RabbitMQExchange, cfg.RabbitMQRoutingKey)
 	likeStateCache := cache.NewLikeStateCache(redisClient, 30*time.Minute)
+	commentCache := cache.NewCommentCache(redisClient, 5*time.Minute)
+	hotWindow := cache.NewHotMinuteWindow(redisClient, 70*time.Minute)
 
 	return &App{
 		Config:           cfg,
@@ -51,12 +55,14 @@ func New(cfg config.Config, db *gorm.DB, redisClient *goredis.Client, mqConn *mq
 		Storage:          store,
 		VideoDetailCache: cache.NewVideoDetailCache(redisClient, cfg.VideoDetailCacheTTL),
 		HotVideoRank:     cache.NewHotVideoRank(redisClient),
+		HotMinuteWindow:  hotWindow,
 		HotFeedSnapshots: cache.NewHotFeedSnapshotStore(redisClient, 5*time.Minute),
 		LikeStateCache:   likeStateCache,
+		CommentCache:     commentCache,
 		Auth:             auth.NewService(cfg.JWTSecret),
 		Users:            user.NewService(userRepo),
-		Videos:           video.NewService(videoRepo, cache.NewHotVideoRank(redisClient), cache.NewHotFeedSnapshotStore(redisClient, 5*time.Minute)),
-		Social:           social.NewService(socialRepo, publisher, likeStateCache),
+		Videos:           video.NewService(videoRepo, hotWindow, cache.NewHotFeedSnapshotStore(redisClient, 5*time.Minute)),
+		Social:           social.NewService(socialRepo, publisher, likeStateCache, commentCache),
 	}
 }
 

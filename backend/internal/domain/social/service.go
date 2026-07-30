@@ -2,6 +2,7 @@ package social
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -14,17 +15,19 @@ import (
 
 type EventPublisher interface {
 	PublishLikeEvent(ctx context.Context, event Event) error
+	PublishCommentEvent(ctx context.Context, event Event) error
 }
 
 type Service struct {
 	repo           Repository
 	publisher      EventPublisher
 	likeStateCache *cache.LikeStateCache
+	commentCache   *cache.CommentCache
 	sfGroup        singleflight.Group
 }
 
-func NewService(repo Repository, publisher EventPublisher, likeStateCache *cache.LikeStateCache) *Service {
-	return &Service{repo: repo, publisher: publisher, likeStateCache: likeStateCache}
+func NewService(repo Repository, publisher EventPublisher, likeStateCache *cache.LikeStateCache, commentCache *cache.CommentCache) *Service {
+	return &Service{repo: repo, publisher: publisher, likeStateCache: likeStateCache, commentCache: commentCache}
 }
 
 func (s *Service) LikeVideo(ctx context.Context, userID uint, videoID uint) (*LikeStatus, error) {
@@ -158,6 +161,26 @@ func (s *Service) CreateComment(ctx context.Context, userID uint, videoID uint, 
 	if err != nil {
 		return nil, err
 	}
+
+	// Write detail cache for Delete async path.
+	if s.commentCache != nil {
+		if data, err := json.Marshal(created); err == nil {
+			_ = s.commentCache.SetDetail(ctx, created.ID, data)
+		}
+		_ = s.commentCache.DeleteFirstPage(ctx, videoID)
+	}
+
+	// Publish side-effect event (Worker updates counts, hot score, video cache).
+	_ = s.publish(ctx, Event{
+		EventID:    buildEventID("comment", userID, videoID),
+		Type:       EventCommentCreated,
+		ActorID:    userID,
+		VideoID:    videoID,
+		CommentID:  created.ID,
+		Delta:      1,
+		OccurredAt: time.Now().UTC(),
+	})
+
 	return created, nil
 }
 
@@ -168,13 +191,47 @@ func (s *Service) ListComments(ctx context.Context, videoID uint, limit int) ([]
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	return s.repo.ListComments(ctx, videoID, limit)
+
+	// First page: try Redis cache.
+	if limit <= 20 && s.commentCache != nil {
+		if data, err := s.commentCache.GetFirstPage(ctx, videoID); err == nil {
+			var cached []Comment
+			if json.Unmarshal(data, &cached) == nil {
+				return cached, nil
+			}
+		}
+	}
+
+	items, err := s.repo.ListComments(ctx, videoID, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cache the first page.
+	if limit <= 20 && s.commentCache != nil && len(items) > 0 {
+		if data, err := json.Marshal(items); err == nil {
+			_ = s.commentCache.SetFirstPage(ctx, videoID, data)
+		}
+	}
+
+	return items, nil
 }
 
 func (s *Service) FindComment(ctx context.Context, commentID uint) (*Comment, error) {
 	if commentID == 0 {
 		return nil, fmt.Errorf("comment id is required")
 	}
+
+	// Try detail cache first.
+	if s.commentCache != nil {
+		if data, err := s.commentCache.GetDetail(ctx, commentID); err == nil {
+			var cached Comment
+			if json.Unmarshal(data, &cached) == nil {
+				return &cached, nil
+			}
+		}
+	}
+
 	return s.repo.FindComment(ctx, commentID)
 }
 
@@ -182,7 +239,31 @@ func (s *Service) DeleteComment(ctx context.Context, commentID uint, userID uint
 	if commentID == 0 || userID == 0 {
 		return fmt.Errorf("comment id and user id are required")
 	}
-	return s.repo.DeleteComment(ctx, commentID, userID)
+
+	// Find comment to get videoID and verify ownership.
+	comment, err := s.FindComment(ctx, commentID)
+	if err != nil {
+		return err
+	}
+	if comment.UserID != userID {
+		return fmt.Errorf("permission denied")
+	}
+
+	// Delete detail cache immediately.
+	if s.commentCache != nil {
+		_ = s.commentCache.DeleteDetail(ctx, commentID)
+	}
+
+	// Async: publish event, Worker does MySQL delete + cache/side effects.
+	return s.publish(ctx, Event{
+		EventID:    buildEventID("comment-del", userID, comment.VideoID),
+		Type:       EventCommentDeleted,
+		ActorID:    userID,
+		VideoID:    comment.VideoID,
+		CommentID:  commentID,
+		Delta:      -1,
+		OccurredAt: time.Now().UTC(),
+	})
 }
 
 func (s *Service) CountVideoComments(ctx context.Context, videoID uint) (int64, error) {
@@ -285,5 +366,12 @@ func (s *Service) publish(ctx context.Context, event Event) error {
 	if s.publisher == nil {
 		return nil
 	}
-	return s.publisher.PublishLikeEvent(ctx, event)
+	switch event.Type {
+	case EventLikeRequested, EventLikeCancelRequested:
+		return s.publisher.PublishLikeEvent(ctx, event)
+	case EventCommentCreated, EventCommentDeleted:
+		return s.publisher.PublishCommentEvent(ctx, event)
+	default:
+		return nil
+	}
 }

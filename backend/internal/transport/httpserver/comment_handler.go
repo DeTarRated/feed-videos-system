@@ -2,11 +2,9 @@ package httpserver
 
 import (
 	"errors"
-	"log"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 
 	"feed-videos-system/backend/internal/domain/social"
 	"feed-videos-system/backend/internal/domain/video"
@@ -63,8 +61,8 @@ func (h *CommentHandler) Create(c *gin.Context) {
 		response.BadRequest(c, err)
 		return
 	}
-	h.deleteVideoDetailCache(c, videoID)
-	h.refreshHotScore(c, videoID)
+	// Side effects (cache invalidation, hot score, comment count) are handled
+	// asynchronously by the Worker consuming the CommentCreated event.
 	response.Created(c, comment)
 }
 
@@ -80,47 +78,11 @@ func (h *CommentHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	comment, err := h.social.FindComment(c.Request.Context(), uint(commentID))
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.NotFound(c, "comment not found")
-			return
-		}
-		response.InternalError(c)
-		return
-	}
-
 	if err := h.social.DeleteComment(c.Request.Context(), uint(commentID), userID); err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			response.NotFound(c, "comment not found")
-			return
-		}
 		response.BadRequest(c, err)
 		return
 	}
-	h.deleteVideoDetailCache(c, comment.VideoID)
-	h.refreshHotScore(c, comment.VideoID)
+	// Side effects (cache invalidation, hot score, comment count) are handled
+	// asynchronously by the Worker consuming the CommentDeleted event.
 	response.OK(c, gin.H{"deleted": true})
-}
-
-func (h *CommentHandler) deleteVideoDetailCache(c *gin.Context, videoID uint) {
-	if err := h.videoDetailCache.Delete(c.Request.Context(), videoID); err != nil {
-		log.Printf("delete video detail cache: %v", err)
-	}
-}
-
-func (h *CommentHandler) refreshHotScore(c *gin.Context, videoID uint) {
-	likeCount, err := h.social.Status(c.Request.Context(), 0, videoID)
-	if err != nil {
-		log.Printf("count video likes for hot score: %v", err)
-		return
-	}
-	commentCount, err := h.social.CountVideoComments(c.Request.Context(), videoID)
-	if err != nil {
-		log.Printf("count video comments for hot score: %v", err)
-		return
-	}
-	if err := h.videos.RefreshHotScore(c.Request.Context(), videoID, likeCount.LikeCount, commentCount); err != nil {
-		log.Printf("refresh hot score: %v", err)
-	}
 }

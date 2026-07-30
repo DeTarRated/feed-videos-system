@@ -50,6 +50,10 @@ func main() {
 	log.Printf("worker listening on queue %s", queueName)
 
 	likeCache := cache.NewLikeStateCache(redisClient, 30*24*time.Hour)
+	commentCache := cache.NewCommentCache(redisClient, 5*time.Minute)
+	videoDetailCache := cache.NewVideoDetailCache(redisClient, cfg.VideoDetailCacheTTL)
+	socialRepo := mysql.NewSocialRepository(db)
+	minuteWindow := cache.NewHotMinuteWindow(redisClient, 70*time.Minute)
 
 	stopCh := make(chan os.Signal, 1)
 	signal.Notify(stopCh, syscall.SIGINT, syscall.SIGTERM)
@@ -62,15 +66,28 @@ func main() {
 		cancel()
 	}()
 
-	// Start periodic batch MySQL sync.
+	// Start periodic batch MySQL sync for likes.
 	go syncLoop(ctx, db, likeCache, 30*time.Second)
 
-	if err := consumeEvents(ctx, mqConn, cfg, likeCache); err != nil {
+	// Start 60-minute sliding window aggregation and cleanup.
+	go aggregateLoop(ctx, minuteWindow, time.Minute)
+	go cleanupLoop(ctx, minuteWindow, 5*time.Minute)
+
+	if err := consumeEvents(ctx, mqConn, cfg, likeCache, commentCache, videoDetailCache, minuteWindow, socialRepo); err != nil {
 		log.Printf("worker stopped with error: %v", err)
 	}
 }
 
-func consumeEvents(ctx context.Context, conn *mq.Connection, cfg config.Config, likeCache *cache.LikeStateCache) error {
+func consumeEvents(
+	ctx context.Context,
+	conn *mq.Connection,
+	cfg config.Config,
+	likeCache *cache.LikeStateCache,
+	commentCache *cache.CommentCache,
+	videoDetailCache *cache.VideoDetailCache,
+	minuteWindow *cache.HotMinuteWindow,
+	socialRepo *mysql.SocialRepository,
+) error {
 	ch, err := conn.Channel()
 	if err != nil {
 		return err
@@ -107,13 +124,21 @@ func consumeEvents(ctx context.Context, conn *mq.Connection, cfg config.Config, 
 				_ = msg.Nack(false, false)
 				continue
 			}
-			if event.Type != social.EventLikeRequested && event.Type != social.EventLikeCancelRequested {
+
+			var handleErr error
+			switch event.Type {
+			case social.EventLikeRequested, social.EventLikeCancelRequested:
+				handleErr = handleLikeEvent(ctx, likeCache, minuteWindow, event)
+			case social.EventCommentCreated, social.EventCommentDeleted:
+				handleErr = handleCommentEvent(ctx, socialRepo, likeCache, commentCache, videoDetailCache, minuteWindow, event)
+			default:
 				log.Printf("skip unsupported event type=%s", event.Type)
 				_ = msg.Ack(false)
 				continue
 			}
-			if err := handleLikeEvent(ctx, likeCache, event); err != nil {
-				log.Printf("handle like event: %v", err)
+
+			if handleErr != nil {
+				log.Printf("handle event type=%s: %v", event.Type, handleErr)
 				_ = msg.Nack(false, true)
 				continue
 			}
@@ -124,7 +149,7 @@ func consumeEvents(ctx context.Context, conn *mq.Connection, cfg config.Config, 
 	}
 }
 
-func handleLikeEvent(ctx context.Context, likeCache *cache.LikeStateCache, event social.Event) error {
+func handleLikeEvent(ctx context.Context, likeCache *cache.LikeStateCache, minuteWindow *cache.HotMinuteWindow, event social.Event) error {
 	switch event.Type {
 	case social.EventLikeRequested:
 		added, err := likeCache.AddVideoUser(ctx, event.VideoID, event.ActorID)
@@ -138,6 +163,8 @@ func handleLikeEvent(ctx context.Context, likeCache *cache.LikeStateCache, event
 			if _, err := likeCache.IncrementLikeCount(ctx, event.VideoID, 1); err != nil {
 				return err
 			}
+			// Write to minute bucket for hot feed window.
+			_ = minuteWindow.AddToBucket(ctx, time.Now(), event.VideoID, 5)
 			return likeCache.MarkDirty(ctx, event.VideoID)
 		}
 		return nil
@@ -158,6 +185,89 @@ func handleLikeEvent(ctx context.Context, likeCache *cache.LikeStateCache, event
 		return nil
 	default:
 		return nil
+	}
+}
+
+func handleCommentEvent(
+	ctx context.Context,
+	socialRepo *mysql.SocialRepository,
+	likeCache *cache.LikeStateCache,
+	commentCache *cache.CommentCache,
+	videoDetailCache *cache.VideoDetailCache,
+	minuteWindow *cache.HotMinuteWindow,
+	event social.Event,
+) error {
+	switch event.Type {
+	case social.EventCommentCreated:
+		if _, err := likeCache.IncrementCommentCount(ctx, event.VideoID, 1); err != nil {
+			return err
+		}
+		// Write to minute bucket for hot feed window.
+		_ = minuteWindow.AddToBucket(ctx, time.Now(), event.VideoID, 3)
+		// Invalidate caches.
+		_ = commentCache.DeleteFirstPage(ctx, event.VideoID)
+		_ = videoDetailCache.Delete(ctx, event.VideoID)
+		return nil
+
+	case social.EventCommentDeleted:
+		if err := socialRepo.DeleteComment(ctx, event.CommentID, event.ActorID); err != nil {
+			log.Printf("delete comment %d: %v", event.CommentID, err)
+		}
+		if _, err := likeCache.IncrementCommentCount(ctx, event.VideoID, -1); err != nil {
+			return err
+		}
+		_ = commentCache.DeleteFirstPage(ctx, event.VideoID)
+		_ = commentCache.DeleteDetail(ctx, event.CommentID)
+		_ = videoDetailCache.Delete(ctx, event.VideoID)
+		return nil
+
+	default:
+		return nil
+	}
+}
+
+// aggregateLoop periodically slides the 60-minute window:
+// adds the bucket from 1 minute ago, removes the bucket from 61 minutes ago.
+func aggregateLoop(ctx context.Context, w *cache.HotMinuteWindow, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			now := time.Now()
+			addMinute := now.Add(-1 * time.Minute)
+			removeMinute := now.Add(-61 * time.Minute)
+
+			if err := w.ApplyBucket(ctx, addMinute, +1); err != nil {
+				log.Printf("aggregate add bucket %s: %v", cache.MinuteKey(addMinute), err)
+			}
+			if err := w.ApplyBucket(ctx, removeMinute, -1); err != nil {
+				log.Printf("aggregate remove bucket %s: %v", cache.MinuteKey(removeMinute), err)
+			}
+			if err := w.DeleteBucket(ctx, removeMinute); err != nil {
+				log.Printf("delete bucket %s: %v", cache.MinuteKey(removeMinute), err)
+			}
+		}
+	}
+}
+
+// cleanupLoop periodically prunes the aggregate ZSET.
+func cleanupLoop(ctx context.Context, w *cache.HotMinuteWindow, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := w.Cleanup(ctx); err != nil {
+				log.Printf("cleanup hot window: %v", err)
+			}
+		}
 	}
 }
 

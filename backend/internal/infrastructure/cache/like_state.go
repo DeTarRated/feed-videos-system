@@ -112,6 +112,20 @@ func (c *LikeStateCache) IncrementLikeCount(ctx context.Context, videoID uint, d
 	return count, nil
 }
 
+func (c *LikeStateCache) IncrementCommentCount(ctx context.Context, videoID uint, delta int64) (int64, error) {
+	if c == nil || c.client == nil {
+		return 0, nil
+	}
+	count, err := c.client.HIncrBy(ctx, LikeVideoStatsKey(videoID), "comment_count", delta).Result()
+	if err != nil {
+		return 0, err
+	}
+	if c.ttl > 0 {
+		_ = c.client.Expire(ctx, LikeVideoStatsKey(videoID), c.ttl).Err()
+	}
+	return count, nil
+}
+
 func (c *LikeStateCache) MarkDirty(ctx context.Context, videoID uint) error {
 	if c == nil || c.client == nil {
 		return nil
@@ -130,6 +144,17 @@ func (c *LikeStateCache) GetLikeCount(ctx context.Context, videoID uint) (int64,
 		return 0, nil
 	}
 	value, err := c.client.HGet(ctx, LikeVideoStatsKey(videoID), "like_count").Int64()
+	if err != nil {
+		return 0, err
+	}
+	return value, nil
+}
+
+func (c *LikeStateCache) GetCommentCount(ctx context.Context, videoID uint) (int64, error) {
+	if c == nil || c.client == nil {
+		return 0, nil
+	}
+	value, err := c.client.HGet(ctx, LikeVideoStatsKey(videoID), "comment_count").Int64()
 	if err != nil {
 		return 0, err
 	}
