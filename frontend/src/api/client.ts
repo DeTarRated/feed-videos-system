@@ -32,6 +32,12 @@ export type Video = {
   commentCount?: number
 }
 
+export type VideoPage = {
+  items: Video[]
+  nextCursor: string
+  hasMore: boolean
+}
+
 export type UploadResult = {
   url: string
   name: string
@@ -133,8 +139,20 @@ export function login(payload: { username: string; password: string }) {
   })
 }
 
-export function listVideos() {
-  return request<{ items: Video[] }>('/videos')
+export function listVideos(options: { limit?: number; cursor?: string } = {}) {
+  const params = new URLSearchParams()
+  if (options.limit) {
+    params.set('limit', String(options.limit))
+  }
+  if (options.cursor) {
+    params.set('cursor', options.cursor)
+  }
+  const query = params.toString()
+  return request<VideoPage>(`/videos${query ? `?${query}` : ''}`)
+}
+
+export function listHotVideos(limit = 10) {
+  return request<{ items: Video[] }>(`/feed/hot?limit=${limit}`)
 }
 
 export function getVideo(id: string) {

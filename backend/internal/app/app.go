@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 
+	goredis "github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 
 	"feed-videos-system/backend/internal/config"
@@ -10,14 +11,18 @@ import (
 	"feed-videos-system/backend/internal/domain/social"
 	"feed-videos-system/backend/internal/domain/user"
 	"feed-videos-system/backend/internal/domain/video"
+	"feed-videos-system/backend/internal/infrastructure/cache"
 	"feed-videos-system/backend/internal/infrastructure/mysql"
 	"feed-videos-system/backend/internal/infrastructure/storage"
 )
 
 type App struct {
-	Config  config.Config
-	DB      *gorm.DB
-	Storage *storage.LocalStore
+	Config           config.Config
+	DB               *gorm.DB
+	Redis            *goredis.Client
+	Storage          *storage.LocalStore
+	VideoDetailCache *cache.VideoDetailCache
+	HotVideoRank     *cache.HotVideoRank
 
 	Auth   *auth.Service
 	Users  *user.Service
@@ -25,25 +30,33 @@ type App struct {
 	Social *social.Service
 }
 
-func New(cfg config.Config, db *gorm.DB) *App {
+func New(cfg config.Config, db *gorm.DB, redisClient *goredis.Client) *App {
 	userRepo := mysql.NewUserRepository(db)
 	videoRepo := mysql.NewVideoRepository(db)
 	socialRepo := mysql.NewSocialRepository(db)
 	store := storage.NewLocalStore(cfg.StorageDir)
 
 	return &App{
-		Config:  cfg,
-		DB:      db,
-		Storage: store,
-		Auth:    auth.NewService(cfg.JWTSecret),
-		Users:   user.NewService(userRepo),
-		Videos:  video.NewService(videoRepo),
-		Social:  social.NewService(socialRepo),
+		Config:           cfg,
+		DB:               db,
+		Redis:            redisClient,
+		Storage:          store,
+		VideoDetailCache: cache.NewVideoDetailCache(redisClient, cfg.VideoDetailCacheTTL),
+		HotVideoRank:     cache.NewHotVideoRank(redisClient),
+		Auth:             auth.NewService(cfg.JWTSecret),
+		Users:            user.NewService(userRepo),
+		Videos:           video.NewService(videoRepo, cache.NewHotVideoRank(redisClient)),
+		Social:           social.NewService(socialRepo),
 	}
 }
 
 func (a *App) Shutdown(ctx context.Context) error {
 	_ = ctx
+	if a.Redis != nil {
+		if err := a.Redis.Close(); err != nil {
+			return err
+		}
+	}
 	if a.DB == nil {
 		return nil
 	}

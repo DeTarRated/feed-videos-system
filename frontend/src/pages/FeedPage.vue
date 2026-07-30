@@ -1,27 +1,55 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
-import { listVideos, resolveMediaUrl, type Video } from '../api/client'
+import { listHotVideos, listVideos, resolveMediaUrl, type Video } from '../api/client'
 
 const videos = ref<Video[]>([])
+const hotVideos = ref<Video[]>([])
 const activeIndex = ref(0)
+const nextCursor = ref('')
+const hasMore = ref(false)
 const loading = ref(false)
+const loadingMore = ref(false)
 const error = ref('')
 
 const activeVideo = computed(() => videos.value[activeIndex.value] || null)
-const sidebarVideos = computed(() => videos.value.slice(0, 5))
+const sidebarVideos = computed(() => hotVideos.value.slice(0, 5))
 
 async function load() {
   loading.value = true
   error.value = ''
   try {
-    const result = await listVideos()
-    videos.value = result.items || []
+    const [latestResult, hotResult] = await Promise.all([
+      listVideos({ limit: 10 }),
+      listHotVideos(5),
+    ])
+    videos.value = latestResult.items || []
+    nextCursor.value = latestResult.nextCursor || ''
+    hasMore.value = latestResult.hasMore
+    hotVideos.value = hotResult.items || []
     activeIndex.value = 0
   } catch (err) {
     error.value = err instanceof Error ? err.message : '加载失败'
   } finally {
     loading.value = false
+  }
+}
+
+async function loadMore() {
+  if (!hasMore.value || !nextCursor.value || loadingMore.value) {
+    return
+  }
+  loadingMore.value = true
+  error.value = ''
+  try {
+    const result = await listVideos({ limit: 10, cursor: nextCursor.value })
+    videos.value = [...videos.value, ...(result.items || [])]
+    nextCursor.value = result.nextCursor || ''
+    hasMore.value = result.hasMore
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '加载失败'
+  } finally {
+    loadingMore.value = false
   }
 }
 
@@ -81,6 +109,10 @@ onMounted(load)
           <small>@user{{ video.authorId }}</small>
         </button>
       </section>
+
+      <button v-if="hasMore" class="load-more-button" type="button" :disabled="loadingMore" @click="loadMore">
+        {{ loadingMore ? '加载中...' : '加载更多' }}
+      </button>
     </main>
 
     <aside class="feed-discovery">
@@ -91,11 +123,12 @@ onMounted(load)
       </section>
 
       <section>
-        <h2>热门作者</h2>
-        <ul>
+        <h2>热榜视频</h2>
+        <p v-if="sidebarVideos.length === 0">互动后会生成热榜排序。</p>
+        <ul v-else>
           <li v-for="video in sidebarVideos" :key="video.id">
-            <RouterLink :to="`/users/${video.authorId}`">@user{{ video.authorId }}</RouterLink>
-            <span>{{ video.title }}</span>
+            <RouterLink :to="`/video/${video.id}`">{{ video.title }}</RouterLink>
+            <span>@user{{ video.authorId }}</span>
           </li>
         </ul>
       </section>

@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"errors"
+	"log"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -9,16 +10,18 @@ import (
 
 	"feed-videos-system/backend/internal/domain/social"
 	"feed-videos-system/backend/internal/domain/video"
+	"feed-videos-system/backend/internal/infrastructure/cache"
 	"feed-videos-system/backend/internal/transport/httpserver/response"
 )
 
 type VideoHandler struct {
-	videos *video.Service
-	social *social.Service
+	videos           *video.Service
+	social           *social.Service
+	videoDetailCache *cache.VideoDetailCache
 }
 
-func NewVideoHandler(videos *video.Service, socialService *social.Service) *VideoHandler {
-	return &VideoHandler{videos: videos, social: socialService}
+func NewVideoHandler(videos *video.Service, socialService *social.Service, videoDetailCache *cache.VideoDetailCache) *VideoHandler {
+	return &VideoHandler{videos: videos, social: socialService, videoDetailCache: videoDetailCache}
 }
 
 type publishVideoRequest struct {
@@ -57,6 +60,9 @@ func (h *VideoHandler) Publish(c *gin.Context) {
 		response.BadRequest(c, err)
 		return
 	}
+	if err := h.videos.RefreshHotScore(c.Request.Context(), item.ID, 0, 0); err != nil {
+		log.Printf("refresh hot score: %v", err)
+	}
 	response.Created(c, item)
 }
 
@@ -67,7 +73,16 @@ func (h *VideoHandler) Detail(c *gin.Context) {
 		return
 	}
 
-	item, err := h.videos.Detail(c.Request.Context(), uint(id))
+	videoID := uint(id)
+	cached := videoDetailResponse{Video: &video.Video{}}
+	if hit, err := h.videoDetailCache.Get(c.Request.Context(), videoID, &cached); err == nil && hit {
+		response.OK(c, cached)
+		return
+	} else if err != nil {
+		log.Printf("read video detail cache: %v", err)
+	}
+
+	item, err := h.videos.Detail(c.Request.Context(), videoID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			response.NotFound(c, "video not found")
@@ -76,17 +91,31 @@ func (h *VideoHandler) Detail(c *gin.Context) {
 		response.InternalError(c)
 		return
 	}
-	commentCount, err := h.social.CountVideoComments(c.Request.Context(), uint(id))
+	commentCount, err := h.social.CountVideoComments(c.Request.Context(), videoID)
 	if err != nil {
 		response.InternalError(c)
 		return
 	}
-	response.OK(c, videoDetailResponse{Video: item, CommentCount: commentCount})
+	detail := videoDetailResponse{Video: item, CommentCount: commentCount}
+	if err := h.videoDetailCache.Set(c.Request.Context(), videoID, detail); err != nil {
+		log.Printf("write video detail cache: %v", err)
+	}
+	response.OK(c, detail)
 }
 
 func (h *VideoHandler) Latest(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
-	items, err := h.videos.Latest(c.Request.Context(), limit)
+	page, err := h.videos.LatestPage(c.Request.Context(), c.Query("cursor"), limit)
+	if err != nil {
+		response.BadRequest(c, err)
+		return
+	}
+	response.OK(c, page)
+}
+
+func (h *VideoHandler) Hot(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	items, err := h.videos.Hot(c.Request.Context(), limit)
 	if err != nil {
 		response.InternalError(c)
 		return

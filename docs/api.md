@@ -24,6 +24,27 @@ Authorization: Bearer {{token}}
 
 成功响应统一为 `{"data": ...}`，失败响应统一为 `{"error": "..."}`。
 
+### 限流规则
+
+阶段 3 使用 Redis 固定窗口限流。超过阈值时返回：
+
+```json
+{
+  "error": "too many requests"
+}
+```
+
+HTTP 状态码为 `429 Too Many Requests`。
+
+| 接口类型 | 限流身份 | 规则 |
+| --- | --- | --- |
+| 注册 | IP | 每分钟 5 次 |
+| 登录 | IP | 每分钟 10 次 |
+| 发布视频 | 用户 ID | 每分钟 5 次 |
+| 点赞/取消点赞 | 用户 ID | 每分钟 60 次 |
+| 评论发布/删除 | 用户 ID | 每分钟 20 次 |
+| 关注/取关 | 用户 ID | 每分钟 30 次 |
+
 ## 账号与视频基础接口
 
 | 方法 | URL | 认证 | 说明 |
@@ -31,13 +52,80 @@ Authorization: Bearer {{token}}
 | `GET` | `/healthz` | 无 | 健康检查 |
 | `POST` | `/auth/register` | 无 | 注册 |
 | `POST` | `/auth/login` | 无 | 登录并获取 Token |
-| `GET` | `/videos` | 无 | 最新视频流 |
+| `GET` | `/videos?limit=20&cursor=...` | 无 | 最新视频流，支持游标分页 |
 | `GET` | `/videos/:id` | 无 | 视频详情 |
+| `GET` | `/feed/hot?limit=20` | 无 | Redis ZSET 热榜视频 |
 | `POST` | `/videos` | 必须 | 发布视频 |
 | `POST` | `/uploads/videos` | 必须 | 上传视频 |
 | `POST` | `/uploads/covers` | 必须 | 上传封面 |
 | `GET` | `/users/:id/stats` | 无 | 用户主页统计 |
 | `GET` | `/users/:id/videos` | 无 | 作者作品列表 |
+
+### 最新视频流
+
+Query 参数：
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `limit` | int | 否 | `20` | 最大 50 |
+| `cursor` | string | 否 | 空 | 上一页返回的 `nextCursor` |
+
+返回示例：
+
+```json
+{
+  "data": {
+    "items": [
+      {
+        "id": 1,
+        "authorId": 2,
+        "title": "示例视频",
+        "description": "视频描述",
+        "videoUrl": "/media/videos/demo.mp4",
+        "coverUrl": "/media/covers/demo.jpg",
+        "publishedAt": "2026-07-30T12:00:00Z"
+      }
+    ],
+    "nextCursor": "eyJwdWJsaXNoZWRBdCI6Ii4uLiIsImlkIjoxfQ",
+    "hasMore": true
+  }
+}
+```
+
+第一页不传 `cursor`。如果 `hasMore` 为 `true`，下一页继续请求：
+
+```text
+GET {{baseUrl}}/videos?limit=20&cursor={{nextCursor}}
+```
+
+### 热榜视频
+
+Query 参数：
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `limit` | int | 否 | `20` | 最大 50 |
+
+返回示例：
+
+```json
+{
+  "data": {
+    "items": [
+      {
+        "id": 1,
+        "authorId": 2,
+        "title": "示例视频",
+        "videoUrl": "/media/videos/demo.mp4",
+        "coverUrl": "/media/covers/demo.jpg",
+        "publishedAt": "2026-07-30T12:00:00Z"
+      }
+    ]
+  }
+}
+```
+
+热榜基于 Redis ZSET `rank:video:hot`，分数由点赞数、评论数和发布时间共同计算。ZSET 为空时降级返回最新视频。
 
 ### 视频详情响应
 

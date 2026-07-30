@@ -242,6 +242,11 @@ button:disabled {
   color: #6b7280;
 }
 
+.load-more-button {
+  justify-self: center;
+  min-width: 160px;
+}
+
 .feed-discovery {
   position: sticky;
   top: 78px;

@@ -2,20 +2,25 @@ package httpserver
 
 import (
 	"errors"
+	"log"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
 
 	"feed-videos-system/backend/internal/domain/social"
+	"feed-videos-system/backend/internal/domain/video"
+	"feed-videos-system/backend/internal/infrastructure/cache"
 	"feed-videos-system/backend/internal/transport/httpserver/response"
 )
 
 type LikeHandler struct {
-	social *social.Service
+	social           *social.Service
+	videos           *video.Service
+	videoDetailCache *cache.VideoDetailCache
 }
 
-func NewLikeHandler(socialService *social.Service) *LikeHandler {
-	return &LikeHandler{social: socialService}
+func NewLikeHandler(socialService *social.Service, videos *video.Service, videoDetailCache *cache.VideoDetailCache) *LikeHandler {
+	return &LikeHandler{social: socialService, videos: videos, videoDetailCache: videoDetailCache}
 }
 
 func (h *LikeHandler) Like(c *gin.Context) {
@@ -34,6 +39,8 @@ func (h *LikeHandler) Like(c *gin.Context) {
 		response.BadRequest(c, err)
 		return
 	}
+	h.deleteVideoDetailCache(c, videoID)
+	h.refreshHotScore(c, videoID, status.LikeCount)
 	response.OK(c, status)
 }
 
@@ -53,6 +60,8 @@ func (h *LikeHandler) Unlike(c *gin.Context) {
 		response.BadRequest(c, err)
 		return
 	}
+	h.deleteVideoDetailCache(c, videoID)
+	h.refreshHotScore(c, videoID, status.LikeCount)
 	response.OK(c, status)
 }
 
@@ -96,4 +105,21 @@ func parseVideoID(c *gin.Context) (uint, bool) {
 		return 0, false
 	}
 	return uint(id), true
+}
+
+func (h *LikeHandler) deleteVideoDetailCache(c *gin.Context, videoID uint) {
+	if err := h.videoDetailCache.Delete(c.Request.Context(), videoID); err != nil {
+		log.Printf("delete video detail cache: %v", err)
+	}
+}
+
+func (h *LikeHandler) refreshHotScore(c *gin.Context, videoID uint, likeCount int64) {
+	commentCount, err := h.social.CountVideoComments(c.Request.Context(), videoID)
+	if err != nil {
+		log.Printf("count video comments for hot score: %v", err)
+		return
+	}
+	if err := h.videos.RefreshHotScore(c.Request.Context(), videoID, likeCount, commentCount); err != nil {
+		log.Printf("refresh hot score: %v", err)
+	}
 }

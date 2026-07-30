@@ -12,6 +12,7 @@ import (
 	"feed-videos-system/backend/internal/app"
 	"feed-videos-system/backend/internal/config"
 	"feed-videos-system/backend/internal/infrastructure/mysql"
+	"feed-videos-system/backend/internal/infrastructure/redis"
 	"feed-videos-system/backend/internal/transport/httpserver"
 )
 
@@ -26,7 +27,12 @@ func main() {
 		log.Fatalf("connect mysql: %v", err)
 	}
 
-	application := app.New(cfg, db)
+	redisClient, err := redis.Open(context.Background(), cfg)
+	if err != nil {
+		log.Fatalf("connect redis: %v", err)
+	}
+
+	application := app.New(cfg, db, redisClient)
 	if err := application.Storage.EnsureDir(); err != nil {
 		log.Fatalf("prepare storage: %v", err)
 	}

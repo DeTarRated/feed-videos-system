@@ -101,6 +101,13 @@ func (s *Service) ListComments(ctx context.Context, videoID uint, limit int) ([]
 	return s.repo.ListComments(ctx, videoID, limit)
 }
 
+func (s *Service) FindComment(ctx context.Context, commentID uint) (*Comment, error) {
+	if commentID == 0 {
+		return nil, fmt.Errorf("comment id is required")
+	}
+	return s.repo.FindComment(ctx, commentID)
+}
+
 func (s *Service) DeleteComment(ctx context.Context, commentID uint, userID uint) error {
 	if commentID == 0 || userID == 0 {
 		return fmt.Errorf("comment id and user id are required")
