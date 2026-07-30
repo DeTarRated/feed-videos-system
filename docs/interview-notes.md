@@ -10,9 +10,10 @@
 
 ### 2. 后端分层
 
-- `cmd/api` 负责启动服务。
-- `internal/domain` 放业务规则。
-- `internal/infrastructure` 放 MySQL 和本地存储实现。
+- `cmd/api` 负责启动 HTTP 服务。
+- `cmd/worker` 负责后台事件消费。
+- `internal/domain` 放业务规则和事件模型。
+- `internal/infrastructure` 放 MySQL、Redis、RabbitMQ 和本地存储实现。
 - `internal/transport/httpserver` 负责 HTTP 路由和响应。
 - 这样后续加 Redis、MQ、SSE 时，不会挤压业务层。
 
@@ -33,27 +34,27 @@
 
 - 最新流基于发布时间倒序。
 - 作者作品列表基于 `author_id` 查询。
-- 当前阶段直接用 MySQL，后续再引入游标分页和 Redis 时间线。
+- 阶段 3 已改为游标分页，避免 offset 在持续新增数据下重复或漏数据。
 
 ### 6. 点赞幂等设计
 
 - `likes` 表使用 `(user_id, video_id)` 唯一约束。
 - 点赞恢复已有记录，取消点赞写入 `deleted_at`，重复点赞/取消不会产生重复关系。
-- 当前同步查询统计值，后续可以迁移为事件异步更新。
+- 阶段 4 在数据库写入成功后发布 `like.created` / `like.removed` 事件，后续热度和通知可异步处理。
 
 ### 7. 评论设计
 
 - `comments` 表使用软删除，列表只展示 `deleted_at IS NULL` 的评论。
 - 评论发布需要登录，列表公开，删除时校验 `comment_id + current_user_id`，用户只能删除自己的评论。
 - 评论内容在领域服务层做去空白和长度校验，避免把校验规则散落在 HTTP 层。
-- 当前评论列表按 `created_at DESC, id DESC` 返回，后续可以扩展游标分页。
+- 阶段 4 在评论创建和删除后发布 `comment.created` / `comment.removed` 事件。
 
 ### 8. 关注设计
 
 - `follows` 表使用 `(follower_id, following_id)` 唯一约束，关注恢复已有记录，取消关注写入 `deleted_at`。
 - 领域服务和数据库约束都禁止用户关注自己，避免无效关系进入系统。
 - 关注状态接口使用可选鉴权：匿名用户能看粉丝数，登录用户能看到自己的 `following` 状态。
-- 粉丝列表和关注列表通过关系表关联 `users` 返回用户基础资料，后续可以扩展分页游标。
+- 阶段 4 在关注和取消关注后发布 `follow.created` / `follow.removed` 事件。
 
 ### 9. 用户主页与账号管理设计
 
@@ -70,11 +71,22 @@
 - Feed 使用游标分页而不是 offset，是为了避免新数据插入导致翻页重复或漏数据。
 - 热榜用 ZSET 是因为它天然支持按分数排序和 Top N 查询。
 - 固定窗口限流实现简单，适合 MVP；令牌桶或滑动窗口可以作为后续优化。
-- 阶段 4 引入 RabbitMQ 后，可以把热度更新从同步逻辑迁移到异步 Worker。
+- 热点流使用 5 分钟快照，解决用户翻页时热榜顺序变化导致的重复或漏刷问题。
+
+## RabbitMQ 和 Worker 骨架
+
+- 阶段 4 先引入 RabbitMQ 作为业务事件总线，事件包括点赞、评论、关注的创建和取消。
+- 同步接口仍完成关键数据库写入，写库成功后由 service 层发布事件。
+- MQ 发布失败不影响主链路响应，这是当前骨架阶段的降级策略。
+- `cmd/worker` 作为独立进程消费事件，当前先完成消费、解析、日志和后续处理入口。
+- 后续可以把热度更新、统计补偿、通知生成迁移到 Worker，降低 HTTP 请求耗时。
+- 如果要保证数据库写入和消息发布强一致，后续会评估 Outbox 模式。
 
 ## 后续可继续讲的方向
 
-- RabbitMQ 做点赞、评论、关注异步化。
+- 60 分钟滑动窗口热点流。
+- RabbitMQ 重试队列和死信队列。
+- Outbox 事件表。
 - SSE 实时通知。
 - 分片上传和断点续传。
 - Docker Compose 和 CI。

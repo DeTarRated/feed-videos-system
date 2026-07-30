@@ -1,13 +1,5 @@
 # 数据库设计
 
-## 当前表
-
-- `users`：用户账号和资料。
-- `videos`：视频基础信息。
-- `likes`：用户与视频的点赞关系，支持软删除。
-- `comments`：视频评论，支持软删除。
-- `follows`：用户关注关系，支持软删除。
-
 ## users
 
 | 字段 | 类型 | 说明 |
@@ -31,6 +23,7 @@
 | `video_url` | varchar(255) | 视频地址 |
 | `cover_url` | varchar(255) | 封面地址 |
 | `published_at` | datetime(3) | 发布时间 |
+| `created_at` / `updated_at` | datetime(3) | 时间字段 |
 
 ## likes
 
@@ -49,7 +42,11 @@
 - `idx_likes_video_deleted(video_id, deleted_at)`：统计视频有效点赞数。
 - `idx_likes_user_deleted(user_id, deleted_at)`：查询我的点赞视频。
 
-点赞采用软删除式状态：点赞恢复记录，取消点赞写入 `deleted_at`，重复操作保持幂等。
+说明：
+
+- 点赞采用软删除式状态。
+- 点赞恢复记录，取消点赞写入 `deleted_at`。
+- 重复点赞 / 取消点赞应保持幂等。
 
 ## comments
 
@@ -68,7 +65,10 @@
 - `idx_comments_video_created(video_id, created_at, id)`：按视频查询评论并排序。
 - `idx_comments_user_deleted(user_id, deleted_at)`：查询用户评论和删除状态。
 
-评论删除使用软删除，并且后端要求 `comment_id` 和当前用户 ID 同时匹配，保证只能删除自己的评论。
+说明：
+
+- 评论采用软删除。
+- 删除评论时，业务校验需要同时匹配 `comment_id` 和当前用户 ID，确保只能删除自己的评论。
 
 ## follows
 
@@ -87,13 +87,9 @@
 - `idx_follows_follower_deleted(follower_id, deleted_at)`：查询关注列表和关注数。
 - `idx_follows_following_deleted(following_id, deleted_at)`：查询粉丝列表和粉丝数。
 
-关注采用软删除式状态：关注恢复记录，取消关注写入 `deleted_at`，重复操作保持幂等。数据库和领域服务都禁止用户关注自己。
+说明：
 
-## 迁移文件
-
-- `001_init_users_videos.sql`
-- `002_init_social_likes.sql`
-- `003_init_social_comments.sql`
-- `004_init_social_follows.sql`
-
-当前 Docker Compose 只会自动执行首次初始化时挂载的迁移文件；已有 MySQL volume 需要手动执行新增迁移。
+- 关注采用软删除式状态。
+- 关注恢复记录，取消关注写入 `deleted_at`。
+- 重复关注 / 取消关注应保持幂等。
+- 数据库层和领域层都应禁止用户关注自己。

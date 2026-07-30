@@ -12,8 +12,9 @@ Use that directory for:
 
 - `go mod tidy`
 - `gofmt -w ./cmd ./internal`
-- `go test ./...`
 - `go run ./cmd/api`
+
+`go test ./...` is run by the user; document the command when verification is needed, but do not execute it automatically.
 
 Do not run these from the repository root unless the command explicitly targets the root-level files.
 
