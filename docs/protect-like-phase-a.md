@@ -148,26 +148,69 @@ if removed == 1:
 
 ## MySQL 刷库
 
-第一阶段只同步点赞计数：
+### 目标
+
+将 Redis 中的点赞关系完整对账到 MySQL `likes` 表，而非只同步计数。
+因为 `likes` 使用软删除模式，计数由 `COUNT(*) WHERE deleted_at IS NULL` 派生，
+所以必须同步用户-视频关系行。
+
+### 刷库链路
 
 ```text
-video:stats:{videoId}.like_count -> video_stats.like_count
+Worker 定时器（30s）
+  │
+  ├─ 1. SRANDMEMBER like:dirty:videos 100
+  │     取最多 100 个随机脏视频 ID
+  │
+  ├─ 2. 对每个视频，执行 Lua 脚本（原子读 + 清脏）：
+  │      SMEMBERS like:video:{videoId}:users
+  │      HGET video:stats:{videoId} like_count
+  │      SREM like:dirty:videos {videoId}
+  │
+  ├─ 3. 批量 UPSERT 到 MySQL likes 表：
+  │      INSERT INTO likes (user_id, video_id, created_at, updated_at)
+  │      VALUES (u1, v1), (u2, v1), ...
+  │      ON CONFLICT (user_id, video_id)
+  │      DO UPDATE SET deleted_at = NULL, updated_at = now
+  │
+  ├─ 4. 清理 MySQL 中已不在 Redis Set 的记录（软删除）：
+  │      UPDATE likes SET deleted_at = NOW()
+  │      WHERE video_id = ? AND deleted_at IS NULL
+  │        AND user_id NOT IN (Redis Set 中的用户 ID)
+  │
+  └─ 5. 失败处理：
+         ─ MySQL 写入失败 → SADD like:dirty:videos {videoId}（重新标记）
+         ─ DeleteLikesNotInSet 失败 → 非致命，下一轮重试
 ```
 
-流程：
+### 为什么需要 Lua 脚本
 
-1. 从 `like:dirty:videos` 取一批 video ID。
-2. 读取 Redis 点赞计数。
-3. 批量更新 MySQL `video_stats.like_count`。
-4. 清理脏标记。
+步骤 2 如果分成两步（先 SMEMBERS 再 SREM），中间存在竞态窗口：
 
-完整点赞关系 diff 后续再补。
+```text
+Sync:  SMEMBERS → [1,2,3]
+Worker: SADD user 4, SADD dirty     ← 新点赞重新标记脏
+Sync:  SREM dirty                   ← 清掉了刚标记的脏！
+```
+
+用 Lua 把 SMEMBERS + SREM 打包成原子操作，如果新点赞在 SREM 之后到达，
+Worker 会再执行 `SADD dirty`，视频留到下一轮同步。不会丢失。
+
+### 一致性保证
+
+- **新增点赞**：Worker 写入 Redis 后 `SADD dirty`，保证下次或本轮同步覆盖。
+- **取消点赞**：Worker 从 Redis Set 移除用户后 `SADD dirty`，同步时步骤 4 的
+  `DeleteLikesNotInSet` 会把 MySQL 中的行软删除。
+- **MySQL 写入失败**：重新 `SADD dirty`，下轮重试。
+- **Lua 执行后 MySQL 写入前宕机**：dirty 标记已清除，但 Redis 数据未持久化。
+  后续可通过全量对账任务弥补（Phase B / Outbox 之后补充）。
 
 ## 查询策略
 
-- 点赞数优先读 Redis。
-- 当前用户是否点赞优先查 Redis Set。
-- `LikedVideos` 第一阶段可以继续保留 MySQL 查询。
+- **`Status()`（`GET /videos/:id/like-status`）已切换为 Redis 优先**：
+  同时读取 `IsLiked`（SISMEMBER）和 `GetLikeCount`（HGET），
+  任一步失败则透明回退 MySQL。未登录用户跳过 `IsLiked` 调用。
+- `LikedVideos()` 和 `CountAuthorReceivedLikes()` 仍走 MySQL（Phase A 范围外）。
 
 ## 降级
 

@@ -6,7 +6,10 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"feed-videos-system/backend/internal/domain/video"
+	"feed-videos-system/backend/internal/infrastructure/cache"
 )
 
 type EventPublisher interface {
@@ -14,12 +17,14 @@ type EventPublisher interface {
 }
 
 type Service struct {
-	repo      Repository
-	publisher EventPublisher
+	repo           Repository
+	publisher      EventPublisher
+	likeStateCache *cache.LikeStateCache
+	sfGroup        singleflight.Group
 }
 
-func NewService(repo Repository, publisher EventPublisher) *Service {
-	return &Service{repo: repo, publisher: publisher}
+func NewService(repo Repository, publisher EventPublisher, likeStateCache *cache.LikeStateCache) *Service {
+	return &Service{repo: repo, publisher: publisher, likeStateCache: likeStateCache}
 }
 
 func (s *Service) LikeVideo(ctx context.Context, userID uint, videoID uint) (*LikeStatus, error) {
@@ -27,11 +32,11 @@ func (s *Service) LikeVideo(ctx context.Context, userID uint, videoID uint) (*Li
 		return nil, fmt.Errorf("user id and video id are required")
 	}
 	if err := s.publish(ctx, Event{
-		EventID:   buildEventID("like", userID, videoID),
-		Type:      EventLikeRequested,
-		ActorID:   userID,
-		VideoID:   videoID,
-		Delta:     1,
+		EventID:    buildEventID("like", userID, videoID),
+		Type:       EventLikeRequested,
+		ActorID:    userID,
+		VideoID:    videoID,
+		Delta:      1,
 		OccurredAt: time.Now().UTC(),
 	}); err != nil {
 		return nil, err
@@ -44,11 +49,11 @@ func (s *Service) UnlikeVideo(ctx context.Context, userID uint, videoID uint) (*
 		return nil, fmt.Errorf("user id and video id are required")
 	}
 	if err := s.publish(ctx, Event{
-		EventID:   buildEventID("unlike", userID, videoID),
-		Type:      EventLikeCancelRequested,
-		ActorID:   userID,
-		VideoID:   videoID,
-		Delta:     -1,
+		EventID:    buildEventID("unlike", userID, videoID),
+		Type:       EventLikeCancelRequested,
+		ActorID:    userID,
+		VideoID:    videoID,
+		Delta:      -1,
 		OccurredAt: time.Now().UTC(),
 	}); err != nil {
 		return nil, err
@@ -60,6 +65,47 @@ func (s *Service) Status(ctx context.Context, userID uint, videoID uint) (*LikeS
 	if videoID == 0 {
 		return nil, fmt.Errorf("video id is required")
 	}
+
+	// Redis first: try cache for both values.
+	if liked, count, err := s.statusFromCache(ctx, userID, videoID); err == nil {
+		return &LikeStatus{VideoID: videoID, Liked: liked, LikeCount: count}, nil
+	}
+
+	// Redis failed — fallback to MySQL, guarded by singleflight to prevent thundering herd.
+	key := fmt.Sprintf("db:like:status:%d:%d", userID, videoID)
+	v, err, _ := s.sfGroup.Do(key, func() (interface{}, error) {
+		return s.statusFromDB(ctx, userID, videoID)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.(*LikeStatus), nil
+}
+
+// statusFromCache reads the like status and count from Redis.
+// Returns a non-nil error if either call fails, so the caller falls back to MySQL.
+func (s *Service) statusFromCache(ctx context.Context, userID uint, videoID uint) (bool, int64, error) {
+	if s.likeStateCache == nil {
+		return false, 0, fmt.Errorf("cache unavailable")
+	}
+	var liked bool
+	var err error
+	if userID > 0 {
+		liked, err = s.likeStateCache.IsLiked(ctx, videoID, userID)
+		if err != nil {
+			return false, 0, err
+		}
+	}
+	count, err := s.likeStateCache.GetLikeCount(ctx, videoID)
+	if err != nil {
+		return false, 0, err
+	}
+	return liked, count, nil
+}
+
+// statusFromDB reads the like status and count from MySQL.
+// Original Status() body, kept as the fallback path.
+func (s *Service) statusFromDB(ctx context.Context, userID uint, videoID uint) (*LikeStatus, error) {
 	liked := false
 	var err error
 	if userID > 0 {

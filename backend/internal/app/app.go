@@ -41,6 +41,7 @@ func New(cfg config.Config, db *gorm.DB, redisClient *goredis.Client, mqConn *mq
 	socialRepo := mysql.NewSocialRepository(db)
 	store := storage.NewLocalStore(cfg.StorageDir)
 	publisher := mq.NewPublisher(mqConn, cfg.RabbitMQExchange, cfg.RabbitMQRoutingKey)
+	likeStateCache := cache.NewLikeStateCache(redisClient, 30*time.Minute)
 
 	return &App{
 		Config:           cfg,
@@ -51,11 +52,11 @@ func New(cfg config.Config, db *gorm.DB, redisClient *goredis.Client, mqConn *mq
 		VideoDetailCache: cache.NewVideoDetailCache(redisClient, cfg.VideoDetailCacheTTL),
 		HotVideoRank:     cache.NewHotVideoRank(redisClient),
 		HotFeedSnapshots: cache.NewHotFeedSnapshotStore(redisClient, 5*time.Minute),
-		LikeStateCache:   cache.NewLikeStateCache(redisClient, 30*time.Minute),
+		LikeStateCache:   likeStateCache,
 		Auth:             auth.NewService(cfg.JWTSecret),
 		Users:            user.NewService(userRepo),
 		Videos:           video.NewService(videoRepo, cache.NewHotVideoRank(redisClient), cache.NewHotFeedSnapshotStore(redisClient, 5*time.Minute)),
-		Social:           social.NewService(socialRepo, publisher),
+		Social:           social.NewService(socialRepo, publisher, likeStateCache),
 	}
 }
 

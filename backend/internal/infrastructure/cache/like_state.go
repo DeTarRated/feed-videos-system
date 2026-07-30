@@ -3,10 +3,28 @@ package cache
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
 )
+
+var syncDirtyScript = goredis.NewScript(`
+	local users_key = KEYS[1]
+	local stats_key = KEYS[2]
+	local dirty_key = KEYS[3]
+	local video_id  = ARGV[1]
+
+	local users = redis.call('SMEMBERS', users_key)
+	local count = redis.call('HGET', stats_key, 'like_count')
+	redis.call('SREM', dirty_key, video_id)
+
+	local result = { count or '0' }
+	for i, u in ipairs(users) do
+		result[#result + 1] = u
+	end
+	return result
+`)
 
 type LikeStateCache struct {
 	client *goredis.Client
@@ -15,6 +33,13 @@ type LikeStateCache struct {
 
 func NewLikeStateCache(client *goredis.Client, ttl time.Duration) *LikeStateCache {
 	return &LikeStateCache{client: client, ttl: ttl}
+}
+
+// DirtyVideoSnapshot represents the state of a dirty video at sync time.
+type DirtyVideoSnapshot struct {
+	VideoID   uint
+	LikeCount int64
+	UserIDs   []uint
 }
 
 func (c *LikeStateCache) AddVideoUser(ctx context.Context, videoID, userID uint) (bool, error) {
@@ -119,16 +144,61 @@ func (c *LikeStateCache) IsLiked(ctx context.Context, videoID, userID uint) (boo
 	return value, err
 }
 
+// SyncDirtyVideo atomically reads the user set and like count for a video,
+// then removes the video from the dirty set. It returns a snapshot suitable
+// for batch MySQL persistence.
+//
+// The Lua script eliminates the race between reading users and clearing
+// the dirty flag: a new like arriving mid-sync will SADD the dirty flag
+// again, so the video stays queued for the next cycle.
+func (c *LikeStateCache) SyncDirtyVideo(ctx context.Context, videoID uint) (*DirtyVideoSnapshot, error) {
+	if c == nil || c.client == nil {
+		return nil, nil
+	}
+
+	keys := []string{
+		LikeVideoUsersKey(videoID),
+		LikeVideoStatsKey(videoID),
+		LikeDirtyVideosKey(),
+	}
+
+	result, err := syncDirtyScript.Run(ctx, c.client, keys, videoID).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	parts, ok := result.([]interface{})
+	if !ok || len(parts) == 0 {
+		return &DirtyVideoSnapshot{VideoID: videoID}, nil
+	}
+
+	countStr := toString(parts[0])
+	count, _ := strconv.ParseInt(countStr, 10, 64)
+
+	userIDs := make([]uint, 0, len(parts)-1)
+	for _, p := range parts[1:] {
+		uid, err := strconv.ParseUint(toString(p), 10, 64)
+		if err == nil && uid > 0 {
+			userIDs = append(userIDs, uint(uid))
+		}
+	}
+
+	return &DirtyVideoSnapshot{
+		VideoID:   videoID,
+		LikeCount: count,
+		UserIDs:   userIDs,
+	}, nil
+}
+
+// DirtyVideos returns up to limit random video IDs from the dirty set.
+// Uses SRANDMEMBER for efficient sampling without fetching the entire set.
 func (c *LikeStateCache) DirtyVideos(ctx context.Context, limit int64) ([]uint, error) {
 	if c == nil || c.client == nil {
 		return nil, nil
 	}
-	ids, err := c.client.SMembers(ctx, LikeDirtyVideosKey()).Result()
+	ids, err := c.client.SRandMemberN(ctx, LikeDirtyVideosKey(), limit).Result()
 	if err != nil {
 		return nil, err
-	}
-	if limit > 0 && int64(len(ids)) > limit {
-		ids = ids[:limit]
 	}
 	result := make([]uint, 0, len(ids))
 	for _, id := range ids {
@@ -161,4 +231,15 @@ func LikeVideoStatsKey(videoID uint) string {
 
 func LikeDirtyVideosKey() string {
 	return "like:dirty:videos"
+}
+
+func toString(v interface{}) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case []byte:
+		return string(val)
+	default:
+		return fmt.Sprintf("%v", val)
+	}
 }

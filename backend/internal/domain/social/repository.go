@@ -9,6 +9,8 @@ import (
 type Repository interface {
 	LikeVideo(ctx context.Context, userID uint, videoID uint) error
 	UnlikeVideo(ctx context.Context, userID uint, videoID uint) error
+	BatchUpsertLikes(ctx context.Context, videoID uint, userIDs []uint) error
+	DeleteLikesNotInSet(ctx context.Context, videoID uint, userIDs []uint) error
 	IsLiked(ctx context.Context, userID uint, videoID uint) (bool, error)
 	CountVideoLikes(ctx context.Context, videoID uint) (int64, error)
 	CountAuthorReceivedLikes(ctx context.Context, authorID uint) (int64, error)

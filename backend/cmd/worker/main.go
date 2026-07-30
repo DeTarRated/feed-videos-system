@@ -15,6 +15,8 @@ import (
 	"feed-videos-system/backend/internal/infrastructure/mq"
 	"feed-videos-system/backend/internal/infrastructure/mysql"
 	"feed-videos-system/backend/internal/infrastructure/redis"
+
+	"gorm.io/gorm"
 )
 
 func main() {
@@ -23,7 +25,8 @@ func main() {
 		log.Fatalf("invalid config: %v", err)
 	}
 
-	if _, err := mysql.Open(cfg.MySQLDSN); err != nil {
+	db, err := mysql.Open(cfg.MySQLDSN)
+	if err != nil {
 		log.Fatalf("connect mysql: %v", err)
 	}
 
@@ -58,6 +61,9 @@ func main() {
 		<-stopCh
 		cancel()
 	}()
+
+	// Start periodic batch MySQL sync.
+	go syncLoop(ctx, db, likeCache, 30*time.Second)
 
 	if err := consumeEvents(ctx, mqConn, cfg, likeCache); err != nil {
 		log.Printf("worker stopped with error: %v", err)
@@ -153,4 +159,65 @@ func handleLikeEvent(ctx context.Context, likeCache *cache.LikeStateCache, event
 	default:
 		return nil
 	}
+}
+
+// syncLoop periodically reconciles dirty video like state from Redis to MySQL.
+func syncLoop(ctx context.Context, db *gorm.DB, likeCache *cache.LikeStateCache, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	repo := mysql.NewSocialRepository(db)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := syncDirtyVideos(ctx, likeCache, repo); err != nil {
+				log.Printf("sync dirty videos: %v", err)
+			}
+		}
+	}
+}
+
+// syncDirtyVideos picks a batch of dirty videos, atomically snapshots their
+// Redis state, and persists the like relationships to MySQL.
+func syncDirtyVideos(ctx context.Context, likeCache *cache.LikeStateCache, repo *mysql.SocialRepository) error {
+	dirtyIDs, err := likeCache.DirtyVideos(ctx, 100)
+	if err != nil {
+		return err
+	}
+	if len(dirtyIDs) == 0 {
+		return nil
+	}
+
+	log.Printf("syncing %d dirty videos", len(dirtyIDs))
+
+	for _, videoID := range dirtyIDs {
+		snapshot, err := likeCache.SyncDirtyVideo(ctx, videoID)
+		if err != nil {
+			log.Printf("sync dirty video %d: %v", videoID, err)
+			continue
+		}
+		if snapshot == nil {
+			continue
+		}
+
+		// Persist current likers to MySQL.
+		if err := repo.BatchUpsertLikes(ctx, snapshot.VideoID, snapshot.UserIDs); err != nil {
+			log.Printf("batch upsert likes for video %d: %v", videoID, err)
+			// Re-mark dirty so we retry next cycle.
+			_ = likeCache.MarkDirty(ctx, videoID)
+			continue
+		}
+
+		// Remove stale likes: users who unliked but still have active rows.
+		if err := repo.DeleteLikesNotInSet(ctx, snapshot.VideoID, snapshot.UserIDs); err != nil {
+			log.Printf("delete stale likes for video %d: %v", videoID, err)
+			// Non-fatal: the stale rows will be cleaned on the next cycle.
+		}
+
+		log.Printf("synced video %d: %d likes", videoID, snapshot.LikeCount)
+	}
+	return nil
 }

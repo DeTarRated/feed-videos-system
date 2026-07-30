@@ -188,3 +188,99 @@ SADD like:dirty:videos {videoId}
 ```
 
 实际处理必须依赖 `SADD` / `SREM` 的返回值，避免重复消息导致重复加减。
+
+## 批量刷库 Lua 脚本
+
+### 目的
+
+定时将 Redis 中的点赞关系同步回 MySQL `likes` 表。
+Worker 每 30 秒从脏视频集合取样，通过 Lua 脚本原子地读取并清理单个视频的脏状态，再批量写入 MySQL。
+
+### 脚本
+
+```lua
+local users_key = KEYS[1]   -- like:video:{videoId}:users
+local stats_key = KEYS[2]   -- video:stats:{videoId}
+local dirty_key = KEYS[3]   -- like:dirty:videos
+local video_id  = ARGV[1]
+
+local users = redis.call('SMEMBERS', users_key)
+local count = redis.call('HGET', stats_key, 'like_count')
+redis.call('SREM', dirty_key, video_id)
+
+local result = { count or '0' }
+for i, u in ipairs(users) do
+    result[#result + 1] = u
+end
+return result
+```
+
+### 调用方式
+
+Worker 中 `SyncDirtyVideo` 方法传入 `videoID`，自动构建三个 key：
+
+```text
+KEYS = [
+    "like:video:{videoId}:users",
+    "video:stats:{videoId}",
+    "like:dirty:videos"
+]
+ARGV = [ "{videoId}" ]
+```
+
+返回值是一个数组，第一个元素为 `like_count`，后续元素为点赞用户 ID。
+
+### 原子性说明
+
+把 `SMEMBERS` + `HGET` + `SREM` 打包为一个 Lua 脚本，消除分步操作之间的竞态窗口：
+
+```text
+分步操作（有竞态）：
+  SMEMBERS → [1,2,3]
+  --- 此时 Worker 写入新用户 4，SADD dirty ---
+  SREM dirty            ← 清掉了刚标记的脏！
+
+Lua 脚本（无竞态）：
+  SMEMBERS + HGET + SREM ← 同一原子事务内执行
+  --- 之后 Worker 写入新用户 4，SADD dirty ---
+  dirty 中重新包含视频 ← 下一轮同步会处理
+```
+
+### 刷库流程
+
+```text
+1. SRANDMEMBER like:dirty:videos 100    -- 随机取最多 100 个脏视频
+2. 对每个视频，执行上述 Lua 脚本          -- 原子读 + 清脏
+3. MySQL 批量 UPSERT 用户-视频关系行     -- ON CONFLICT DO UPDATE
+4. MySQL 清理不在 Redis Set 中的行       -- soft delete 已取消点赞
+5. 任一步失败 → SADD like:dirty:videos    -- 重新标记，下轮重试
+```
+
+## 防缓存击穿（singleflight）
+
+### 问题
+
+`Service.Status()` 查询链路为 Redis 优先 → MySQL 回退。
+当 Redis 中对应 key 集体过期或 Redis 短暂不可用时，
+所有并发请求同时穿透到 MySQL，造成缓存击穿。
+
+### 方案
+
+在 MySQL 回退路径上使用 `golang.org/x/sync/singleflight`，
+同一 `(userID, videoID)` 组合的并发请求只执行一次 MySQL 查询，其余 goroutine 等待共享结果。
+
+```text
+并发请求 × N（同一 video + user，Redis 未命中）
+  │
+  ├─ g.Do("db:like:status:{userID}:{videoID}", fn)
+  │    ├─ 第一个到达：执行 statusFromDB()，查询 MySQL
+  │    └─ 其余 N-1 个：等待，共享第一个的结果
+  │
+  └─ 所有请求拿到同一个 *LikeStatus
+```
+
+### 作用范围
+
+- 仅包裹 MySQL 回退路径（`statusFromDB`）。
+- Redis 命中时不做 singleflight（无必要，Redis 已是 sub-ms 响应）。
+- `singleflight.Group` 零值可用，无需构造参数。
