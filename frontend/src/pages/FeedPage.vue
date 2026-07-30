@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
-import { listHotVideos, listVideos, resolveMediaUrl, type Video } from '../api/client'
+import { listVideos, resolveMediaUrl, type Video } from '../api/client'
 
 const videos = ref<Video[]>([])
-const hotVideos = ref<Video[]>([])
 const activeIndex = ref(0)
 const nextCursor = ref('')
 const hasMore = ref(false)
@@ -13,20 +12,15 @@ const loadingMore = ref(false)
 const error = ref('')
 
 const activeVideo = computed(() => videos.value[activeIndex.value] || null)
-const sidebarVideos = computed(() => hotVideos.value.slice(0, 5))
 
 async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [latestResult, hotResult] = await Promise.all([
-      listVideos({ limit: 10 }),
-      listHotVideos(5),
-    ])
-    videos.value = latestResult.items || []
-    nextCursor.value = latestResult.nextCursor || ''
-    hasMore.value = latestResult.hasMore
-    hotVideos.value = hotResult.items || []
+    const result = await listVideos({ limit: 10 })
+    videos.value = result.items || []
+    nextCursor.value = result.nextCursor || ''
+    hasMore.value = result.hasMore
     activeIndex.value = 0
   } catch (err) {
     error.value = err instanceof Error ? err.message : '加载失败'
@@ -66,7 +60,7 @@ onMounted(load)
       <div class="feed-toolbar">
         <div>
           <h1>推荐</h1>
-          <p>发现最新发布的视频</p>
+          <p>按发布时间顺序浏览最新视频</p>
         </div>
         <button type="button" @click="load">刷新</button>
       </div>
@@ -114,24 +108,5 @@ onMounted(load)
         {{ loadingMore ? '加载中...' : '加载更多' }}
       </button>
     </main>
-
-    <aside class="feed-discovery">
-      <section>
-        <h2>创作入口</h2>
-        <p>上传视频、填写标题和封面，发布到推荐流。</p>
-        <RouterLink to="/publish">发布视频</RouterLink>
-      </section>
-
-      <section>
-        <h2>热榜视频</h2>
-        <p v-if="sidebarVideos.length === 0">互动后会生成热榜排序。</p>
-        <ul v-else>
-          <li v-for="video in sidebarVideos" :key="video.id">
-            <RouterLink :to="`/video/${video.id}`">{{ video.title }}</RouterLink>
-            <span>@user{{ video.authorId }}</span>
-          </li>
-        </ul>
-      </section>
-    </aside>
   </section>
 </template>

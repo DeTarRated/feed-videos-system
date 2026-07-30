@@ -36,6 +36,13 @@ type videoDetailResponse struct {
 	CommentCount int64 `json:"commentCount"`
 }
 
+type hotPageResponse struct {
+	Items       []video.Video `json:"items"`
+	SnapshotID  string        `json:"snapshotId"`
+	LastVideoID uint          `json:"lastVideoId"`
+	HasMore     bool          `json:"hasMore"`
+}
+
 func (h *VideoHandler) Publish(c *gin.Context) {
 	var req publishVideoRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -115,10 +122,11 @@ func (h *VideoHandler) Latest(c *gin.Context) {
 
 func (h *VideoHandler) Hot(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
-	items, err := h.videos.Hot(c.Request.Context(), limit)
+	lastVideoID, _ := strconv.ParseUint(c.DefaultQuery("lastVideoId", "0"), 10, 64)
+	page, err := h.videos.HotPage(c.Request.Context(), c.Query("snapshotId"), uint(lastVideoID), limit)
 	if err != nil {
 		response.InternalError(c)
 		return
 	}
-	response.OK(c, gin.H{"items": items})
+	response.OK(c, hotPageResponse{Items: page.Items, SnapshotID: page.SnapshotID, LastVideoID: page.LastVideoID, HasMore: page.HasMore})
 }

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"time"
 
 	goredis "github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -23,6 +24,7 @@ type App struct {
 	Storage          *storage.LocalStore
 	VideoDetailCache *cache.VideoDetailCache
 	HotVideoRank     *cache.HotVideoRank
+	HotFeedSnapshots *cache.HotFeedSnapshotStore
 
 	Auth   *auth.Service
 	Users  *user.Service
@@ -43,9 +45,10 @@ func New(cfg config.Config, db *gorm.DB, redisClient *goredis.Client) *App {
 		Storage:          store,
 		VideoDetailCache: cache.NewVideoDetailCache(redisClient, cfg.VideoDetailCacheTTL),
 		HotVideoRank:     cache.NewHotVideoRank(redisClient),
+		HotFeedSnapshots: cache.NewHotFeedSnapshotStore(redisClient, 5*time.Minute),
 		Auth:             auth.NewService(cfg.JWTSecret),
 		Users:            user.NewService(userRepo),
-		Videos:           video.NewService(videoRepo, cache.NewHotVideoRank(redisClient)),
+		Videos:           video.NewService(videoRepo, cache.NewHotVideoRank(redisClient), cache.NewHotFeedSnapshotStore(redisClient, 5*time.Minute)),
 		Social:           social.NewService(socialRepo),
 	}
 }

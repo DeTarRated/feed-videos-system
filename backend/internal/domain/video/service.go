@@ -13,19 +13,38 @@ type RankStore interface {
 	TopIDs(ctx context.Context, limit int) ([]uint, error)
 }
 
-type Service struct {
-	repo Repository
-	rank RankStore
+type HotFeedSnapshot struct {
+	ID      string    `json:"id"`
+	IDs     []uint    `json:"ids"`
+	Created time.Time `json:"createdAt"`
 }
 
-func NewService(repo Repository, rank RankStore) *Service {
-	return &Service{repo: repo, rank: rank}
+type SnapshotStore interface {
+	Create(ctx context.Context, ids []uint) (*HotFeedSnapshot, error)
+	Get(ctx context.Context, snapshotID string) (*HotFeedSnapshot, error)
 }
 
 type LatestPage struct {
 	Items      []Video `json:"items"`
 	NextCursor string  `json:"nextCursor"`
 	HasMore    bool    `json:"hasMore"`
+}
+
+type HotPage struct {
+	Items       []Video `json:"items"`
+	SnapshotID  string  `json:"snapshotId"`
+	LastVideoID uint    `json:"lastVideoId"`
+	HasMore     bool    `json:"hasMore"`
+}
+
+type Service struct {
+	repo     Repository
+	rank     RankStore
+	snapshot SnapshotStore
+}
+
+func NewService(repo Repository, rank RankStore, snapshot SnapshotStore) *Service {
+	return &Service{repo: repo, rank: rank, snapshot: snapshot}
 }
 
 type PublishInput struct {
@@ -101,20 +120,92 @@ func (s *Service) LatestPage(ctx context.Context, cursorValue string, limit int)
 }
 
 func (s *Service) Hot(ctx context.Context, limit int) ([]Video, error) {
+	page, err := s.HotPage(ctx, "", 0, limit)
+	if err != nil {
+		return nil, err
+	}
+	return page.Items, nil
+}
+
+func (s *Service) HotPage(ctx context.Context, snapshotID string, lastVideoID uint, limit int) (*HotPage, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
 	if s.rank == nil {
-		return s.Latest(ctx, limit)
+		items, err := s.Latest(ctx, limit)
+		if err != nil {
+			return nil, err
+		}
+		return &HotPage{Items: items, HasMore: false}, nil
 	}
-	ids, err := s.rank.TopIDs(ctx, limit)
+
+	topIDs, err := s.rank.TopIDs(ctx, 200)
 	if err != nil {
 		return nil, err
 	}
-	if len(ids) == 0 {
-		return s.Latest(ctx, limit)
+	if len(topIDs) == 0 {
+		items, err := s.Latest(ctx, limit)
+		if err != nil {
+			return nil, err
+		}
+		return &HotPage{Items: items, HasMore: false}, nil
 	}
-	return s.repo.ListByIDs(ctx, ids)
+
+	var snapshot *HotFeedSnapshot
+	if s.snapshot != nil {
+		if snapshotID == "" {
+			snapshot, err = s.snapshot.Create(ctx, topIDs)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			snapshot, err = s.snapshot.Get(ctx, snapshotID)
+			if err != nil {
+				return nil, err
+			}
+			if snapshot == nil {
+				snapshot, err = s.snapshot.Create(ctx, topIDs)
+				if err != nil {
+					return nil, err
+				}
+				lastVideoID = 0
+			}
+		}
+	} else {
+		snapshot = &HotFeedSnapshot{ID: "", IDs: topIDs, Created: time.Now().UTC()}
+	}
+
+	start := 0
+	if lastVideoID > 0 {
+		for i, id := range snapshot.IDs {
+			if id == lastVideoID {
+				start = i + 1
+				break
+			}
+		}
+	}
+	if start > len(snapshot.IDs) {
+		start = len(snapshot.IDs)
+	}
+	end := start + limit
+	if end > len(snapshot.IDs) {
+		end = len(snapshot.IDs)
+	}
+	if start >= len(snapshot.IDs) {
+		return &HotPage{Items: []Video{}, SnapshotID: snapshot.ID, LastVideoID: 0, HasMore: false}, nil
+	}
+
+	ids := snapshot.IDs[start:end]
+	items, err := s.repo.ListByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	hasMore := end < len(snapshot.IDs)
+	var nextLastID uint
+	if len(items) > 0 {
+		nextLastID = items[len(items)-1].ID
+	}
+	return &HotPage{Items: items, SnapshotID: snapshot.ID, LastVideoID: nextLastID, HasMore: hasMore}, nil
 }
 
 func (s *Service) RefreshHotScore(ctx context.Context, videoID uint, likeCount int64, commentCount int64) error {

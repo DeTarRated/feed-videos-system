@@ -26,6 +26,7 @@ onMounted(async () => {
   <main class="app-shell">
     <aside class="side-nav" aria-label="主导航">
       <RouterLink class="side-nav-item" to="/feed">推荐</RouterLink>
+      <RouterLink class="side-nav-item" to="/feed/hot">热点</RouterLink>
       <RouterLink class="side-nav-item" :to="profileLink">主页</RouterLink>
     </aside>
 

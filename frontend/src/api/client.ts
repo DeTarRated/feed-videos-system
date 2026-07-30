@@ -151,8 +151,26 @@ export function listVideos(options: { limit?: number; cursor?: string } = {}) {
   return request<VideoPage>(`/videos${query ? `?${query}` : ''}`)
 }
 
-export function listHotVideos(limit = 10) {
-  return request<{ items: Video[] }>(`/feed/hot?limit=${limit}`)
+export type HotPage = {
+  items: Video[]
+  snapshotId: string
+  lastVideoId: number
+  hasMore: boolean
+}
+
+export function listHotVideos(options: { limit?: number; snapshotId?: string; lastVideoId?: string } = {}) {
+  const params = new URLSearchParams()
+  if (options.limit) {
+    params.set('limit', String(options.limit))
+  }
+  if (options.snapshotId) {
+    params.set('snapshotId', options.snapshotId)
+  }
+  if (options.lastVideoId) {
+    params.set('lastVideoId', options.lastVideoId)
+  }
+  const query = params.toString()
+  return request<HotPage>(`/feed/hot${query ? `?${query}` : ''}`)
 }
 
 export function getVideo(id: string) {

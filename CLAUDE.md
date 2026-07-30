@@ -36,4 +36,6 @@ Use curl only when the user asks for terminal commands, when a scriptable reprod
 
 Do not add `Co-Authored-By: Claude <noreply@anthropic.com>` or any other Claude co-author trailer to commit messages in this project.
 
-When suggesting or creating commits, use only the user's configured Git author and a normal commit subject/body.
+When suggesting commits, use only the user's configured Git author and a normal commit subject/body.
+
+Do not run `git add` or `git commit` in this project. The user will stage and commit changes themselves. When the user is ready to commit, provide only the suggested commit message, for example `feat: add feed cache and ranking`.
