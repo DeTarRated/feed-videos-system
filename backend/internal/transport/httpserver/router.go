@@ -7,11 +7,12 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"feed-videos-system/backend/internal/app"
+	"feed-videos-system/backend/internal/middleware"
 )
 
 func NewRouter(application *app.App) http.Handler {
 	engine := gin.New()
-	engine.Use(CORS())
+	engine.Use(middleware.CORS())
 	engine.Use(gin.Recovery())
 	engine.Use(RequestLogger())
 	engine.NoRoute(NoRoute)
@@ -27,12 +28,12 @@ func NewRouter(application *app.App) http.Handler {
 	followHandler := NewFollowHandler(application.Social, application.Users)
 	uploadHandler := NewUploadHandler(application.Storage)
 
-	registerLimit := RateLimit(application.Redis, RateLimitRule{Name: "auth_register", Limit: 5, Window: time.Minute})
-	loginLimit := RateLimit(application.Redis, RateLimitRule{Name: "auth_login", Limit: 10, Window: time.Minute})
-	publishLimit := RateLimit(application.Redis, RateLimitRule{Name: "video_publish", Limit: 5, Window: time.Minute, UseUserID: true, FallbackToIP: true})
-	likeLimit := RateLimit(application.Redis, RateLimitRule{Name: "video_like", Limit: 60, Window: time.Minute, UseUserID: true, FallbackToIP: true})
-	commentLimit := RateLimit(application.Redis, RateLimitRule{Name: "video_comment", Limit: 20, Window: time.Minute, UseUserID: true, FallbackToIP: true})
-	followLimit := RateLimit(application.Redis, RateLimitRule{Name: "user_follow", Limit: 30, Window: time.Minute, UseUserID: true, FallbackToIP: true})
+	registerLimit := middleware.RateLimit(application.Redis, middleware.RateLimitRule{Name: "auth_register", Limit: 5, Window: time.Minute})
+	loginLimit := middleware.RateLimit(application.Redis, middleware.RateLimitRule{Name: "auth_login", Limit: 10, Window: time.Minute})
+	publishLimit := middleware.RateLimit(application.Redis, middleware.RateLimitRule{Name: "video_publish", Limit: 5, Window: time.Minute, UseUserID: true, FallbackToIP: true})
+	likeLimit := middleware.RateLimit(application.Redis, middleware.RateLimitRule{Name: "video_like", Limit: 60, Window: time.Minute, UseUserID: true, FallbackToIP: true})
+	commentLimit := middleware.RateLimit(application.Redis, middleware.RateLimitRule{Name: "video_comment", Limit: 20, Window: time.Minute, UseUserID: true, FallbackToIP: true})
+	followLimit := middleware.RateLimit(application.Redis, middleware.RateLimitRule{Name: "user_follow", Limit: 30, Window: time.Minute, UseUserID: true, FallbackToIP: true})
 
 	api := engine.Group("/api/v1")
 	{

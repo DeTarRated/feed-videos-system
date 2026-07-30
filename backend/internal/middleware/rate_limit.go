@@ -1,4 +1,4 @@
-package httpserver
+package middleware
 
 import (
 	"fmt"
@@ -18,6 +18,8 @@ type RateLimitRule struct {
 	UseUserID    bool
 	FallbackToIP bool
 }
+
+const currentUserIDKey = "currentUserID"
 
 func RateLimit(client *goredis.Client, rule RateLimitRule) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -52,7 +54,7 @@ func RateLimit(client *goredis.Client, rule RateLimitRule) gin.HandlerFunc {
 
 func rateLimitIdentity(c *gin.Context, rule RateLimitRule) string {
 	if rule.UseUserID {
-		if userID, ok := CurrentUserID(c); ok {
+		if userID, ok := currentUserID(c); ok {
 			return fmt.Sprintf("user:%d", userID)
 		}
 		if !rule.FallbackToIP {
@@ -60,6 +62,15 @@ func rateLimitIdentity(c *gin.Context, rule RateLimitRule) string {
 		}
 	}
 	return "ip:" + sanitizeRateLimitPart(c.ClientIP())
+}
+
+func currentUserID(c *gin.Context) (uint, bool) {
+	value, exists := c.Get(currentUserIDKey)
+	if !exists {
+		return 0, false
+	}
+	id, ok := value.(uint)
+	return id, ok
 }
 
 func sanitizeRateLimitPart(value string) string {

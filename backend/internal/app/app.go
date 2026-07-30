@@ -13,6 +13,7 @@ import (
 	"feed-videos-system/backend/internal/domain/user"
 	"feed-videos-system/backend/internal/domain/video"
 	"feed-videos-system/backend/internal/infrastructure/cache"
+	"feed-videos-system/backend/internal/infrastructure/mq"
 	"feed-videos-system/backend/internal/infrastructure/mysql"
 	"feed-videos-system/backend/internal/infrastructure/storage"
 )
@@ -21,10 +22,12 @@ type App struct {
 	Config           config.Config
 	DB               *gorm.DB
 	Redis            *goredis.Client
+	MQ               *mq.Connection
 	Storage          *storage.LocalStore
 	VideoDetailCache *cache.VideoDetailCache
 	HotVideoRank     *cache.HotVideoRank
 	HotFeedSnapshots *cache.HotFeedSnapshotStore
+	LikeStateCache   *cache.LikeStateCache
 
 	Auth   *auth.Service
 	Users  *user.Service
@@ -32,29 +35,37 @@ type App struct {
 	Social *social.Service
 }
 
-func New(cfg config.Config, db *gorm.DB, redisClient *goredis.Client) *App {
+func New(cfg config.Config, db *gorm.DB, redisClient *goredis.Client, mqConn *mq.Connection) *App {
 	userRepo := mysql.NewUserRepository(db)
 	videoRepo := mysql.NewVideoRepository(db)
 	socialRepo := mysql.NewSocialRepository(db)
 	store := storage.NewLocalStore(cfg.StorageDir)
+	publisher := mq.NewPublisher(mqConn, cfg.RabbitMQExchange, cfg.RabbitMQRoutingKey)
 
 	return &App{
 		Config:           cfg,
 		DB:               db,
 		Redis:            redisClient,
+		MQ:               mqConn,
 		Storage:          store,
 		VideoDetailCache: cache.NewVideoDetailCache(redisClient, cfg.VideoDetailCacheTTL),
 		HotVideoRank:     cache.NewHotVideoRank(redisClient),
 		HotFeedSnapshots: cache.NewHotFeedSnapshotStore(redisClient, 5*time.Minute),
+		LikeStateCache:   cache.NewLikeStateCache(redisClient, 30*time.Minute),
 		Auth:             auth.NewService(cfg.JWTSecret),
 		Users:            user.NewService(userRepo),
 		Videos:           video.NewService(videoRepo, cache.NewHotVideoRank(redisClient), cache.NewHotFeedSnapshotStore(redisClient, 5*time.Minute)),
-		Social:           social.NewService(socialRepo),
+		Social:           social.NewService(socialRepo, publisher),
 	}
 }
 
 func (a *App) Shutdown(ctx context.Context) error {
 	_ = ctx
+	if a.MQ != nil {
+		if err := a.MQ.Close(); err != nil {
+			return err
+		}
+	}
 	if a.Redis != nil {
 		if err := a.Redis.Close(); err != nil {
 			return err

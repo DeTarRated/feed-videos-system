@@ -4,36 +4,56 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"feed-videos-system/backend/internal/domain/video"
 )
 
-type Service struct {
-	repo Repository
+type EventPublisher interface {
+	PublishLikeEvent(ctx context.Context, event Event) error
 }
 
-func NewService(repo Repository) *Service {
-	return &Service{repo: repo}
+type Service struct {
+	repo      Repository
+	publisher EventPublisher
+}
+
+func NewService(repo Repository, publisher EventPublisher) *Service {
+	return &Service{repo: repo, publisher: publisher}
 }
 
 func (s *Service) LikeVideo(ctx context.Context, userID uint, videoID uint) (*LikeStatus, error) {
 	if userID == 0 || videoID == 0 {
 		return nil, fmt.Errorf("user id and video id are required")
 	}
-	if err := s.repo.LikeVideo(ctx, userID, videoID); err != nil {
+	if err := s.publish(ctx, Event{
+		EventID:   buildEventID("like", userID, videoID),
+		Type:      EventLikeRequested,
+		ActorID:   userID,
+		VideoID:   videoID,
+		Delta:     1,
+		OccurredAt: time.Now().UTC(),
+	}); err != nil {
 		return nil, err
 	}
-	return s.Status(ctx, userID, videoID)
+	return &LikeStatus{VideoID: videoID, Liked: true}, nil
 }
 
 func (s *Service) UnlikeVideo(ctx context.Context, userID uint, videoID uint) (*LikeStatus, error) {
 	if userID == 0 || videoID == 0 {
 		return nil, fmt.Errorf("user id and video id are required")
 	}
-	if err := s.repo.UnlikeVideo(ctx, userID, videoID); err != nil {
+	if err := s.publish(ctx, Event{
+		EventID:   buildEventID("unlike", userID, videoID),
+		Type:      EventLikeCancelRequested,
+		ActorID:   userID,
+		VideoID:   videoID,
+		Delta:     -1,
+		OccurredAt: time.Now().UTC(),
+	}); err != nil {
 		return nil, err
 	}
-	return s.Status(ctx, userID, videoID)
+	return &LikeStatus{VideoID: videoID, Liked: false}, nil
 }
 
 func (s *Service) Status(ctx context.Context, userID uint, videoID uint) (*LikeStatus, error) {
@@ -88,7 +108,11 @@ func (s *Service) CreateComment(ctx context.Context, userID uint, videoID uint, 
 	if err := s.repo.CreateComment(ctx, comment); err != nil {
 		return nil, err
 	}
-	return s.repo.FindComment(ctx, comment.ID)
+	created, err := s.repo.FindComment(ctx, comment.ID)
+	if err != nil {
+		return nil, err
+	}
+	return created, nil
 }
 
 func (s *Service) ListComments(ctx context.Context, videoID uint, limit int) ([]Comment, error) {
@@ -190,6 +214,10 @@ func (s *Service) Following(ctx context.Context, userID uint, limit int) ([]Foll
 	return s.repo.ListFollowing(ctx, userID, normalizeFollowLimit(limit))
 }
 
+func buildEventID(prefix string, userID, videoID uint) string {
+	return fmt.Sprintf("%s:%d:%d:%d", prefix, userID, videoID, time.Now().UnixNano())
+}
+
 func validateFollowIDs(followerID uint, followingID uint) error {
 	if followerID == 0 || followingID == 0 {
 		return fmt.Errorf("follower id and following id are required")
@@ -205,4 +233,11 @@ func normalizeFollowLimit(limit int) int {
 		return 50
 	}
 	return limit
+}
+
+func (s *Service) publish(ctx context.Context, event Event) error {
+	if s.publisher == nil {
+		return nil
+	}
+	return s.publisher.PublishLikeEvent(ctx, event)
 }

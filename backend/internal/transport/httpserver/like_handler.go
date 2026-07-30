@@ -2,7 +2,6 @@ package httpserver
 
 import (
 	"errors"
-	"log"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -39,8 +38,6 @@ func (h *LikeHandler) Like(c *gin.Context) {
 		response.BadRequest(c, err)
 		return
 	}
-	h.deleteVideoDetailCache(c, videoID)
-	h.refreshHotScore(c, videoID, status.LikeCount)
 	response.OK(c, status)
 }
 
@@ -60,8 +57,6 @@ func (h *LikeHandler) Unlike(c *gin.Context) {
 		response.BadRequest(c, err)
 		return
 	}
-	h.deleteVideoDetailCache(c, videoID)
-	h.refreshHotScore(c, videoID, status.LikeCount)
 	response.OK(c, status)
 }
 
@@ -105,21 +100,4 @@ func parseVideoID(c *gin.Context) (uint, bool) {
 		return 0, false
 	}
 	return uint(id), true
-}
-
-func (h *LikeHandler) deleteVideoDetailCache(c *gin.Context, videoID uint) {
-	if err := h.videoDetailCache.Delete(c.Request.Context(), videoID); err != nil {
-		log.Printf("delete video detail cache: %v", err)
-	}
-}
-
-func (h *LikeHandler) refreshHotScore(c *gin.Context, videoID uint, likeCount int64) {
-	commentCount, err := h.social.CountVideoComments(c.Request.Context(), videoID)
-	if err != nil {
-		log.Printf("count video comments for hot score: %v", err)
-		return
-	}
-	if err := h.videos.RefreshHotScore(c.Request.Context(), videoID, likeCount, commentCount); err != nil {
-		log.Printf("refresh hot score: %v", err)
-	}
 }

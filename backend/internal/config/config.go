@@ -18,6 +18,12 @@ type Config struct {
 	RedisDB             int
 	VideoDetailCacheTTL time.Duration
 	RateLimitWindow     time.Duration
+	RabbitMQURL         string
+	RabbitMQExchange    string
+	RabbitMQQueue       string
+	RabbitMQRoutingKey  string
+	RabbitMQRetryQueue  string
+	RabbitMQDLQ         string
 }
 
 func Load() Config {
@@ -32,6 +38,12 @@ func Load() Config {
 		RedisDB:             getEnvInt("REDIS_DB", 0),
 		VideoDetailCacheTTL: getEnvDuration("VIDEO_DETAIL_CACHE_TTL", 10*time.Minute),
 		RateLimitWindow:     getEnvDuration("RATE_LIMIT_WINDOW", time.Minute),
+		RabbitMQURL:         getEnv("RABBITMQ_URL", "amqp://feed:feed@127.0.0.1:5672/"),
+		RabbitMQExchange:    getEnv("RABBITMQ_EXCHANGE", "feed.events"),
+		RabbitMQQueue:       getEnv("RABBITMQ_QUEUE", "feed.events"),
+		RabbitMQRoutingKey:  getEnv("RABBITMQ_ROUTING_KEY", "feed.event"),
+		RabbitMQRetryQueue:  getEnv("RABBITMQ_RETRY_QUEUE", "feed.events.retry"),
+		RabbitMQDLQ:         getEnv("RABBITMQ_DEAD_LETTER_QUEUE", "feed.events.dlq"),
 	}
 }
 
@@ -57,6 +69,18 @@ func (c Config) Validate() error {
 	}
 	if c.RateLimitWindow <= 0 {
 		return fmt.Errorf("rate limit window must be positive")
+	}
+	if c.RabbitMQURL == "" {
+		return fmt.Errorf("rabbitmq url is required")
+	}
+	if c.RabbitMQExchange == "" {
+		return fmt.Errorf("rabbitmq exchange is required")
+	}
+	if c.RabbitMQQueue == "" {
+		return fmt.Errorf("rabbitmq queue is required")
+	}
+	if c.RabbitMQRoutingKey == "" {
+		return fmt.Errorf("rabbitmq routing key is required")
 	}
 	return nil
 }
