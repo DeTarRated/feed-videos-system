@@ -42,6 +42,10 @@ func NewRouter(application *app.App) http.Handler {
 		api.DELETE("/videos/:id/comments/:commentId", AuthRequired(application.Auth), commentHandler.Delete)
 		api.POST("/videos", AuthRequired(application.Auth), videoHandler.Publish)
 
+		api.GET("/users/me", AuthRequired(application.Auth), userHandler.Me)
+		api.PATCH("/users/me", AuthRequired(application.Auth), userHandler.UpdateProfile)
+		api.PATCH("/users/me/password", AuthRequired(application.Auth), userHandler.ChangePassword)
+		api.GET("/users/:id", userHandler.Detail)
 		api.GET("/users/:id/stats", userHandler.Stats)
 		api.GET("/users/:id/videos", userHandler.Videos)
 		api.GET("/users/:id/follow-status", OptionalAuth(application.Auth), followHandler.Status)
@@ -49,7 +53,7 @@ func NewRouter(application *app.App) http.Handler {
 		api.DELETE("/users/:id/follow", AuthRequired(application.Auth), followHandler.Unfollow)
 		api.GET("/users/:id/followers", followHandler.Followers)
 		api.GET("/users/:id/following", followHandler.Following)
-		api.GET("/users/me/liked-videos", AuthRequired(application.Auth), likeHandler.LikedVideos)
+		api.GET("/me/liked-videos", AuthRequired(application.Auth), likeHandler.LikedVideos)
 
 		uploads := api.Group("/uploads", AuthRequired(application.Auth))
 		{

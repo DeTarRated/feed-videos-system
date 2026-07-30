@@ -6,4 +6,6 @@ type Repository interface {
 	Create(ctx context.Context, u *User) error
 	FindByID(ctx context.Context, id uint) (*User, error)
 	FindByUsername(ctx context.Context, username string) (*User, error)
+	UpdateProfile(ctx context.Context, u *User) error
+	UpdatePassword(ctx context.Context, id uint, passwordHash string) error
 }

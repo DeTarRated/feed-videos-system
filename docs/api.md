@@ -61,7 +61,7 @@ Authorization: Bearer {{token}}
 | `POST` | `{{baseUrl}}/videos/:id/like` | 必须 | 点赞视频，重复调用幂等 |
 | `DELETE` | `{{baseUrl}}/videos/:id/like` | 必须 | 取消点赞，重复调用幂等 |
 | `GET` | `{{baseUrl}}/videos/:id/like-status` | 可选 | 查询当前用户点赞状态和总数 |
-| `GET` | `{{baseUrl}}/users/me/liked-videos` | 必须 | 我的点赞视频列表 |
+| `GET` | `{{baseUrl}}/me/liked-videos` | 必须 | 我的点赞视频列表 |
 
 ### 点赞/取消点赞请求
 
@@ -176,6 +176,10 @@ Authorization: Bearer {{token}}
 
 | 方法 | URL | 认证 | 说明 |
 | --- | --- | --- | --- |
+| `GET` | `{{baseUrl}}/users/:id` | 无 | 用户公开资料 |
+| `GET` | `{{baseUrl}}/users/me` | 必须 | 当前登录用户资料 |
+| `PATCH` | `{{baseUrl}}/users/me` | 必须 | 修改当前用户资料 |
+| `PATCH` | `{{baseUrl}}/users/me/password` | 必须 | 修改当前用户密码 |
 | `GET` | `{{baseUrl}}/users/:id/stats` | 无 | 返回作品数、获赞数、粉丝数、关注数 |
 | `GET` | `{{baseUrl}}/users/:id/videos` | 无 | 返回作者作品 |
 | `GET` | `{{baseUrl}}/users/:id/follow-status` | 可选 | 查询当前登录用户是否关注目标用户和目标粉丝数 |
@@ -185,6 +189,61 @@ Authorization: Bearer {{token}}
 | `GET` | `{{baseUrl}}/users/:id/following` | 无 | 关注列表 |
 
 用户统计中的 `likeCount`、`followerCount`、`followingCount` 均来自真实关系数据。
+
+### 用户资料
+
+公开资料和当前用户资料返回字段一致，但 `GET /users/me` 必须带登录态。
+
+Headers：
+
+```text
+Authorization: Bearer {{token}}
+```
+
+资料返回示例：
+
+```json
+{
+  "data": {
+    "id": 1,
+    "username": "alice",
+    "nickname": "Alice",
+    "avatarUrl": "/media/covers/avatar.jpg",
+    "bio": "喜欢记录生活"
+  }
+}
+```
+
+修改资料请求：
+
+```json
+{
+  "nickname": "Alice",
+  "avatarUrl": "/media/covers/avatar.jpg",
+  "bio": "喜欢记录生活"
+}
+```
+
+修改密码请求：
+
+```json
+{
+  "oldPassword": "old-pass",
+  "newPassword": "new-pass"
+}
+```
+
+修改密码成功返回：
+
+```json
+{
+  "data": {
+    "updated": true
+  }
+}
+```
+
+用户名暂不开放修改；昵称允许重复，用户名仍由唯一索引保证不可重复。
 
 ### 关注状态
 

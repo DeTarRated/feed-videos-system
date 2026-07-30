@@ -31,3 +31,9 @@ Prefer giving the user:
 - The expected response shape or key fields to check.
 
 Use curl only when the user asks for terminal commands, when a scriptable reproduction is necessary, or when comparing command-line output matters.
+
+## Git commit attribution
+
+Do not add `Co-Authored-By: Claude <noreply@anthropic.com>` or any other Claude co-author trailer to commit messages in this project.
+
+When suggesting or creating commits, use only the user's configured Git author and a normal commit subject/body.

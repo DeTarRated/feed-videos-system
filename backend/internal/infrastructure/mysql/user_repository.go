@@ -35,3 +35,21 @@ func (r *UserRepository) FindByUsername(ctx context.Context, username string) (*
 	}
 	return &u, nil
 }
+
+func (r *UserRepository) UpdateProfile(ctx context.Context, u *user.User) error {
+	return r.db.WithContext(ctx).
+		Model(&user.User{}).
+		Where("id = ?", u.ID).
+		Updates(map[string]any{
+			"nickname":   u.Nickname,
+			"avatar_url": u.AvatarURL,
+			"bio":        u.Bio,
+		}).Error
+}
+
+func (r *UserRepository) UpdatePassword(ctx context.Context, id uint, passwordHash string) error {
+	return r.db.WithContext(ctx).
+		Model(&user.User{}).
+		Where("id = ?", id).
+		Update("password", passwordHash).Error
+}

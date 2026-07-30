@@ -29,6 +29,10 @@ export const useSessionStore = defineStore('session', {
       localStorage.setItem('token', token)
       localStorage.setItem('user', JSON.stringify(user))
     },
+    setUser(user: User) {
+      this.user = user
+      localStorage.setItem('user', JSON.stringify(user))
+    },
     clearSession() {
       this.token = ''
       this.user = null

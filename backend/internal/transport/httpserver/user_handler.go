@@ -31,6 +31,92 @@ type userStatsResponse struct {
 	FollowingCount int64 `json:"followingCount"`
 }
 
+type updateProfileRequest struct {
+	Nickname  string `json:"nickname" binding:"required"`
+	AvatarURL string `json:"avatarUrl"`
+	Bio       string `json:"bio"`
+}
+
+type changePasswordRequest struct {
+	OldPassword string `json:"oldPassword" binding:"required"`
+	NewPassword string `json:"newPassword" binding:"required"`
+}
+
+func (h *UserHandler) Me(c *gin.Context) {
+	userID, ok := CurrentUserID(c)
+	if !ok {
+		response.Unauthorized(c, "login required")
+		return
+	}
+	h.getUser(c, userID)
+}
+
+func (h *UserHandler) Detail(c *gin.Context) {
+	userID, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+	h.getUser(c, userID)
+}
+
+func (h *UserHandler) UpdateProfile(c *gin.Context) {
+	userID, ok := CurrentUserID(c)
+	if !ok {
+		response.Unauthorized(c, "login required")
+		return
+	}
+	var req updateProfileRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, err)
+		return
+	}
+	u, err := h.users.UpdateProfile(c.Request.Context(), userID, user.UpdateProfileInput{
+		Nickname:  req.Nickname,
+		AvatarURL: req.AvatarURL,
+		Bio:       req.Bio,
+	})
+	if err != nil {
+		response.BadRequest(c, err)
+		return
+	}
+	response.OK(c, u)
+}
+
+func (h *UserHandler) ChangePassword(c *gin.Context) {
+	userID, ok := CurrentUserID(c)
+	if !ok {
+		response.Unauthorized(c, "login required")
+		return
+	}
+	var req changePasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, err)
+		return
+	}
+	if err := h.users.ChangePassword(c.Request.Context(), userID, req.OldPassword, req.NewPassword); err != nil {
+		if errors.Is(err, user.ErrInvalidCredentials) {
+			response.Unauthorized(c, "invalid old password")
+			return
+		}
+		response.BadRequest(c, err)
+		return
+	}
+	response.OK(c, gin.H{"updated": true})
+}
+
+func (h *UserHandler) getUser(c *gin.Context, userID uint) {
+	u, err := h.users.Get(c.Request.Context(), userID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.NotFound(c, "user not found")
+			return
+		}
+		response.InternalError(c)
+		return
+	}
+	response.OK(c, u)
+}
+
 func (h *UserHandler) Stats(c *gin.Context) {
 	userID, ok := parseUintParam(c, "id")
 	if !ok {

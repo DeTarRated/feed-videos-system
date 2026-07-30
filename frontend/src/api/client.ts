@@ -190,6 +190,38 @@ export function deleteComment(token: string, videoId: string, commentId: number)
   })
 }
 
+export function getUser(id: string) {
+  return request<User>(`/users/${id}`)
+}
+
+export function getCurrentUser(token: string) {
+  return request<User>('/users/me', {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  })
+}
+
+export function updateProfile(token: string, payload: { nickname: string; avatarUrl?: string; bio?: string }) {
+  return request<User>('/users/me', {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  })
+}
+
+export function changePassword(token: string, payload: { oldPassword: string; newPassword: string }) {
+  return request<{ updated: boolean }>('/users/me/password', {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  })
+}
+
 export function getUserStats(id: string) {
   return request<UserStats>(`/users/${id}/stats`)
 }
@@ -233,7 +265,7 @@ export function listFollowing(id: string, limit = 50) {
 }
 
 export function listLikedVideos(token: string, limit = 20) {
-  return request<{ items: Video[] }>(`/users/me/liked-videos?limit=${limit}`, {
+  return request<{ items: Video[] }>(`/me/liked-videos?limit=${limit}`, {
     headers: {
       Authorization: `Bearer ${token}`,
     },
