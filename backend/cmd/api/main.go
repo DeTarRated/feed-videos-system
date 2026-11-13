@@ -35,10 +35,13 @@ func main() {
 
 	mqConn, err := mq.Open(cfg)
 	if err != nil {
-		log.Printf("connect rabbitmq: %v; async events disabled", err)
+		log.Fatalf("connect rabbitmq: %v", err)
 	}
 
-	application := app.New(cfg, db, redisClient, mqConn)
+	application, err := app.New(cfg, db, redisClient, mqConn)
+	if err != nil {
+		log.Fatalf("initialize application: %v", err)
+	}
 	if err := application.Storage.EnsureDir(); err != nil {
 		log.Fatalf("prepare storage: %v", err)
 	}

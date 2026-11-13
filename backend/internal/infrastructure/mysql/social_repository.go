@@ -2,6 +2,8 @@ package mysql
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -127,7 +129,7 @@ func (r *SocialRepository) CreateComment(ctx context.Context, comment *social.Co
 	return r.db.WithContext(ctx).Create(comment).Error
 }
 
-func (r *SocialRepository) FindComment(ctx context.Context, commentID uint) (*social.Comment, error) {
+func (r *SocialRepository) FindComment(ctx context.Context, commentID string) (*social.Comment, error) {
 	var item social.Comment
 	err := r.db.WithContext(ctx).
 		Table("comments").
@@ -152,7 +154,7 @@ func (r *SocialRepository) ListComments(ctx context.Context, videoID uint, limit
 	return items, err
 }
 
-func (r *SocialRepository) DeleteComment(ctx context.Context, commentID uint, userID uint) error {
+func (r *SocialRepository) DeleteComment(ctx context.Context, commentID string, userID uint) error {
 	now := time.Now()
 	result := r.db.WithContext(ctx).
 		Model(&social.Comment{}).
@@ -226,6 +228,40 @@ func (r *SocialRepository) CountFollowing(ctx context.Context, userID uint) (int
 		Where("follower_id = ? AND deleted_at IS NULL", userID).
 		Count(&count).Error
 	return count, err
+}
+
+func (r *SocialRepository) LastCommittedVersion(ctx context.Context, key string) (uint64, error) {
+	if strings.HasPrefix(key, "like:") {
+		parts := strings.Split(key, ":")
+		if len(parts) != 3 {
+			return 0, nil
+		}
+		var userID, videoID uint64
+		if _, err := fmt.Sscan(parts[1], &userID); err != nil {
+			return 0, nil
+		}
+		if _, err := fmt.Sscan(parts[2], &videoID); err != nil {
+			return 0, nil
+		}
+		var version uint64
+		err := r.db.WithContext(ctx).
+			Model(&social.Like{}).
+			Select("COALESCE(MAX(op_version), 0)").
+			Where("user_id = ? AND video_id = ?", userID, videoID).
+			Scan(&version).Error
+		return version, err
+	}
+	if strings.HasPrefix(key, "comment:") {
+		commentID := strings.TrimPrefix(key, "comment:")
+		var version uint64
+		err := r.db.WithContext(ctx).
+			Model(&social.Comment{}).
+			Select("COALESCE(MAX(op_version), 0)").
+			Where("id = ?", commentID).
+			Scan(&version).Error
+		return version, err
+	}
+	return 0, nil
 }
 
 func (r *SocialRepository) ListFollowers(ctx context.Context, userID uint, limit int) ([]social.FollowUser, error) {

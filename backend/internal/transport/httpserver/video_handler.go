@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"errors"
 	"log"
 	"strconv"
@@ -39,6 +40,7 @@ type videoDetailResponse struct {
 type hotPageResponse struct {
 	Items       []video.Video `json:"items"`
 	SnapshotID  string        `json:"snapshotId"`
+	NextOffset  int           `json:"nextOffset"`
 	LastVideoID uint          `json:"lastVideoId"`
 	HasMore     bool          `json:"hasMore"`
 }
@@ -81,6 +83,10 @@ func (h *VideoHandler) Detail(c *gin.Context) {
 	}
 
 	videoID := uint(id)
+	if empty, err := h.videoDetailCache.IsEmpty(c.Request.Context(), videoID); err == nil && empty {
+		response.NotFound(c, "video not found")
+		return
+	}
 	cached := videoDetailResponse{Video: &video.Video{}}
 	if hit, err := h.videoDetailCache.Get(c.Request.Context(), videoID, &cached); err == nil && hit {
 		response.OK(c, cached)
@@ -89,7 +95,24 @@ func (h *VideoHandler) Detail(c *gin.Context) {
 		log.Printf("read video detail cache: %v", err)
 	}
 
-	item, err := h.videos.Detail(c.Request.Context(), videoID)
+	value, err := h.videoDetailCache.Do(c.Request.Context(), cache.VideoDetailKey(videoID), func(ctx context.Context) (any, error) {
+		item, err := h.videos.Detail(ctx, videoID)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				_ = h.videoDetailCache.SetEmpty(ctx, videoID)
+			}
+			return nil, err
+		}
+		commentCount, err := h.social.CountVideoComments(ctx, videoID)
+		if err != nil {
+			return nil, err
+		}
+		detail := videoDetailResponse{Video: item, CommentCount: commentCount}
+		if err := h.videoDetailCache.Set(ctx, videoID, detail); err != nil {
+			log.Printf("write video detail cache: %v", err)
+		}
+		return detail, nil
+	})
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			response.NotFound(c, "video not found")
@@ -98,16 +121,7 @@ func (h *VideoHandler) Detail(c *gin.Context) {
 		response.InternalError(c)
 		return
 	}
-	commentCount, err := h.social.CountVideoComments(c.Request.Context(), videoID)
-	if err != nil {
-		response.InternalError(c)
-		return
-	}
-	detail := videoDetailResponse{Video: item, CommentCount: commentCount}
-	if err := h.videoDetailCache.Set(c.Request.Context(), videoID, detail); err != nil {
-		log.Printf("write video detail cache: %v", err)
-	}
-	response.OK(c, detail)
+	response.OK(c, value)
 }
 
 func (h *VideoHandler) Latest(c *gin.Context) {
@@ -122,11 +136,11 @@ func (h *VideoHandler) Latest(c *gin.Context) {
 
 func (h *VideoHandler) Hot(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
-	lastVideoID, _ := strconv.ParseUint(c.DefaultQuery("lastVideoId", "0"), 10, 64)
-	page, err := h.videos.HotPage(c.Request.Context(), c.Query("snapshotId"), uint(lastVideoID), limit)
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	page, err := h.videos.HotPage(c.Request.Context(), c.Query("snapshotId"), offset, limit)
 	if err != nil {
 		response.InternalError(c)
 		return
 	}
-	response.OK(c, hotPageResponse{Items: page.Items, SnapshotID: page.SnapshotID, LastVideoID: page.LastVideoID, HasMore: page.HasMore})
+	response.OK(c, hotPageResponse{Items: page.Items, SnapshotID: page.SnapshotID, NextOffset: page.NextOffset, LastVideoID: page.LastVideoID, HasMore: page.HasMore})
 }

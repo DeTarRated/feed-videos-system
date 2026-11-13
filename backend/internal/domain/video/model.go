@@ -17,3 +17,10 @@ type Video struct {
 func (Video) TableName() string {
 	return "videos"
 }
+
+type HotFeedSnapshotPage struct {
+	SnapshotID string `json:"snapshotId"`
+	Offset     int    `json:"offset"`
+	IDs        []uint `json:"ids"`
+	HasMore    bool   `json:"hasMore"`
+}

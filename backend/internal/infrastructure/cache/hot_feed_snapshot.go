@@ -57,6 +57,29 @@ func (s *HotFeedSnapshotStore) Get(ctx context.Context, snapshotID string) (*vid
 	return &snapshot, nil
 }
 
+func (s *HotFeedSnapshotStore) GetPage(ctx context.Context, snapshotID string, offset int, limit int) (*video.HotFeedSnapshotPage, error) {
+	snapshot, err := s.Get(ctx, snapshotID)
+	if err != nil || snapshot == nil {
+		return nil, err
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(snapshot.IDs) {
+		return &video.HotFeedSnapshotPage{SnapshotID: snapshot.ID, Offset: offset, IDs: []uint{}, HasMore: false}, nil
+	}
+	end := offset + limit
+	if end > len(snapshot.IDs) {
+		end = len(snapshot.IDs)
+	}
+	return &video.HotFeedSnapshotPage{
+		SnapshotID: snapshot.ID,
+		Offset:     end,
+		IDs:        snapshot.IDs[offset:end],
+		HasMore:    end < len(snapshot.IDs),
+	}, nil
+}
+
 func HotFeedSnapshotKey(snapshotID string) string {
 	return fmt.Sprintf("feed:hot:snapshot:%s", snapshotID)
 }

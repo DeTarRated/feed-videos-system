@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"errors"
 	"strconv"
 
@@ -33,12 +34,19 @@ func (h *LikeHandler) Like(c *gin.Context) {
 		return
 	}
 
-	status, err := h.social.LikeVideo(c.Request.Context(), userID, videoID)
+	status, err := h.social.LikeVideo(c.Request.Context(), userID, videoID, c.GetHeader("Idempotency-Key"))
 	if err != nil {
-		response.BadRequest(c, err)
+		switch {
+		case errors.Is(err, cache.ErrIdempotencyConflict):
+			response.Conflict(c, "idempotency key conflicts with previous request")
+		case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled), isPublishUnavailableError(err):
+			response.ServiceUnavailable(c, "interaction command is temporarily unavailable")
+		default:
+			response.BadRequest(c, err)
+		}
 		return
 	}
-	response.OK(c, status)
+	response.Accepted(c, status)
 }
 
 func (h *LikeHandler) Unlike(c *gin.Context) {
@@ -52,12 +60,19 @@ func (h *LikeHandler) Unlike(c *gin.Context) {
 		return
 	}
 
-	status, err := h.social.UnlikeVideo(c.Request.Context(), userID, videoID)
+	status, err := h.social.UnlikeVideo(c.Request.Context(), userID, videoID, c.GetHeader("Idempotency-Key"))
 	if err != nil {
-		response.BadRequest(c, err)
+		switch {
+		case errors.Is(err, cache.ErrIdempotencyConflict):
+			response.Conflict(c, "idempotency key conflicts with previous request")
+		case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled), isPublishUnavailableError(err):
+			response.ServiceUnavailable(c, "interaction command is temporarily unavailable")
+		default:
+			response.BadRequest(c, err)
+		}
 		return
 	}
-	response.OK(c, status)
+	response.Accepted(c, status)
 }
 
 func (h *LikeHandler) Status(c *gin.Context) {

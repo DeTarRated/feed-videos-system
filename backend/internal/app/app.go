@@ -37,12 +37,23 @@ type App struct {
 	Social *social.Service
 }
 
-func New(cfg config.Config, db *gorm.DB, redisClient *goredis.Client, mqConn *mq.Connection) *App {
+func New(cfg config.Config, db *gorm.DB, redisClient *goredis.Client, mqConn *mq.Connection) (*App, error) {
+	videoDetailCache := cache.NewVideoDetailCache(redisClient, cfg.VideoDetailCacheTTL)
 	userRepo := mysql.NewUserRepository(db)
 	videoRepo := mysql.NewVideoRepository(db)
 	socialRepo := mysql.NewSocialRepository(db)
 	store := storage.NewLocalStore(cfg.StorageDir)
-	publisher := mq.NewPublisher(mqConn, cfg.RabbitMQExchange, cfg.RabbitMQRoutingKey)
+	publisher, err := mq.NewPublisher(mqConn, cfg.RabbitMQExchange, cfg.RabbitMQRoutingKey)
+	if err != nil {
+		return nil, err
+	}
+	commandPublisher, err := mq.NewPublisher(mqConn, cfg.RabbitMQCommandExchange, cfg.RabbitMQLikeRoutingKey)
+	if err != nil {
+		_ = publisher.Close()
+		return nil, err
+	}
+	idempotency := cache.NewIdempotencyStore(redisClient, cfg.IdempotencyTTL)
+	versioner := cache.NewVersionSequencer(redisClient, socialRepo)
 	likeStateCache := cache.NewLikeStateCache(redisClient, 30*time.Minute)
 	commentCache := cache.NewCommentCache(redisClient, 5*time.Minute)
 	hotWindow := cache.NewHotMinuteWindow(redisClient, 70*time.Minute)
@@ -53,7 +64,7 @@ func New(cfg config.Config, db *gorm.DB, redisClient *goredis.Client, mqConn *mq
 		Redis:            redisClient,
 		MQ:               mqConn,
 		Storage:          store,
-		VideoDetailCache: cache.NewVideoDetailCache(redisClient, cfg.VideoDetailCacheTTL),
+		VideoDetailCache: videoDetailCache,
 		HotVideoRank:     cache.NewHotVideoRank(redisClient),
 		HotMinuteWindow:  hotWindow,
 		HotFeedSnapshots: cache.NewHotFeedSnapshotStore(redisClient, 5*time.Minute),
@@ -61,9 +72,9 @@ func New(cfg config.Config, db *gorm.DB, redisClient *goredis.Client, mqConn *mq
 		CommentCache:     commentCache,
 		Auth:             auth.NewService(cfg.JWTSecret),
 		Users:            user.NewService(userRepo),
-		Videos:           video.NewService(videoRepo, hotWindow, cache.NewHotFeedSnapshotStore(redisClient, 5*time.Minute)),
-		Social:           social.NewService(socialRepo, publisher, likeStateCache, commentCache),
-	}
+		Videos:           video.NewService(videoRepo, hotWindow, cache.NewHotFeedSnapshotStore(redisClient, 5*time.Minute), videoDetailCache),
+		Social:           social.NewService(socialRepo, commandPublisher, idempotency, versioner, cfg.RabbitMQConfirmTimeout, cfg.RabbitMQLikeRoutingKey, cfg.RabbitMQCommentRoutingKey, likeStateCache, commentCache),
+	}, nil
 }
 
 func (a *App) Shutdown(ctx context.Context) error {

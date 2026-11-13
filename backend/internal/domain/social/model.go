@@ -6,6 +6,7 @@ type Like struct {
 	ID        uint       `gorm:"primaryKey" json:"id"`
 	UserID    uint       `gorm:"index;not null" json:"userId"`
 	VideoID   uint       `gorm:"index;not null" json:"videoId"`
+	OpVersion uint64     `gorm:"column:op_version" json:"-"`
 	CreatedAt time.Time  `json:"createdAt"`
 	UpdatedAt time.Time  `json:"updatedAt"`
 	DeletedAt *time.Time `gorm:"index" json:"-"`
@@ -16,20 +17,26 @@ func (Like) TableName() string {
 }
 
 type LikeStatus struct {
-	VideoID   uint  `json:"videoId"`
-	Liked     bool  `json:"liked"`
-	LikeCount int64 `json:"likeCount"`
+	VideoID     uint   `json:"videoId"`
+	Liked       bool   `json:"liked"`
+	LikeCount   int64  `json:"likeCount"`
+	Status      string `json:"status,omitempty"`
+	OperationID string `json:"operationId,omitempty"`
+	OpVersion   string `json:"opVersion,omitempty"`
 }
 
 type Comment struct {
-	ID           uint       `gorm:"primaryKey" json:"id"`
-	UserID       uint       `gorm:"index;not null" json:"userId"`
-	UserNickname string     `gorm:"column:user_nickname;->" json:"userNickname"`
-	VideoID      uint       `gorm:"index;not null" json:"videoId"`
-	Content      string     `gorm:"size:500;not null" json:"content"`
-	CreatedAt    time.Time  `json:"createdAt"`
-	UpdatedAt    time.Time  `json:"updatedAt"`
-	DeletedAt    *time.Time `gorm:"index" json:"-"`
+	ID                 string     `gorm:"primaryKey;size:36;column:id" json:"id"`
+	UserID             uint       `gorm:"index;not null" json:"userId"`
+	UserNickname       string     `gorm:"column:user_nickname;->" json:"userNickname"`
+	VideoID            uint       `gorm:"index;not null" json:"videoId"`
+	Content            string     `gorm:"size:500;not null" json:"content"`
+	OpVersion          uint64     `gorm:"column:op_version" json:"-"`
+	OperationID        string     `gorm:"column:operation_id" json:"-"`
+	RequestFingerprint string     `gorm:"column:request_fingerprint" json:"-"`
+	CreatedAt          time.Time  `json:"createdAt"`
+	UpdatedAt          time.Time  `json:"updatedAt"`
+	DeletedAt          *time.Time `gorm:"index" json:"-"`
 }
 
 func (Comment) TableName() string {

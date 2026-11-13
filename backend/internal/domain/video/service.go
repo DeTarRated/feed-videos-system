@@ -2,6 +2,7 @@ package video
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
@@ -22,6 +23,7 @@ type HotFeedSnapshot struct {
 type SnapshotStore interface {
 	Create(ctx context.Context, ids []uint) (*HotFeedSnapshot, error)
 	Get(ctx context.Context, snapshotID string) (*HotFeedSnapshot, error)
+	GetPage(ctx context.Context, snapshotID string, offset int, limit int) (*HotFeedSnapshotPage, error)
 }
 
 type LatestPage struct {
@@ -33,18 +35,25 @@ type LatestPage struct {
 type HotPage struct {
 	Items       []Video `json:"items"`
 	SnapshotID  string  `json:"snapshotId"`
+	NextOffset  int     `json:"nextOffset"`
 	LastVideoID uint    `json:"lastVideoId"`
 	HasMore     bool    `json:"hasMore"`
+}
+
+type DetailCache interface {
+	GetMany(ctx context.Context, videoIDs []uint) (map[uint][]byte, []uint, error)
+	Set(ctx context.Context, videoID uint, value any) error
 }
 
 type Service struct {
 	repo     Repository
 	rank     RankStore
 	snapshot SnapshotStore
+	details  DetailCache
 }
 
-func NewService(repo Repository, rank RankStore, snapshot SnapshotStore) *Service {
-	return &Service{repo: repo, rank: rank, snapshot: snapshot}
+func NewService(repo Repository, rank RankStore, snapshot SnapshotStore, details DetailCache) *Service {
+	return &Service{repo: repo, rank: rank, snapshot: snapshot, details: details}
 }
 
 type PublishInput struct {
@@ -127,9 +136,12 @@ func (s *Service) Hot(ctx context.Context, limit int) ([]Video, error) {
 	return page.Items, nil
 }
 
-func (s *Service) HotPage(ctx context.Context, snapshotID string, lastVideoID uint, limit int) (*HotPage, error) {
+func (s *Service) HotPage(ctx context.Context, snapshotID string, offset int, limit int) (*HotPage, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
 	}
 	if s.rank == nil {
 		items, err := s.Latest(ctx, limit)
@@ -137,6 +149,36 @@ func (s *Service) HotPage(ctx context.Context, snapshotID string, lastVideoID ui
 			return nil, err
 		}
 		return &HotPage{Items: items, HasMore: false}, nil
+	}
+
+	if s.snapshot != nil {
+		if snapshotID == "" {
+			topIDs, err := s.rank.TopIDs(ctx, 200)
+			if err != nil {
+				return nil, err
+			}
+			snapshot, err := s.snapshot.Create(ctx, topIDs)
+			if err != nil {
+				return nil, err
+			}
+			return s.hotPageFromSnapshot(ctx, snapshot.ID, 0, limit)
+		}
+		page, err := s.snapshot.GetPage(ctx, snapshotID, offset, limit)
+		if err != nil {
+			return nil, err
+		}
+		if page == nil {
+			topIDs, err := s.rank.TopIDs(ctx, 200)
+			if err != nil {
+				return nil, err
+			}
+			snapshot, err := s.snapshot.Create(ctx, topIDs)
+			if err != nil {
+				return nil, err
+			}
+			return s.hotPageFromSnapshot(ctx, snapshot.ID, 0, limit)
+		}
+		return s.hotPageFromIDSlice(ctx, page.IDs, snapshotID, page.Offset, page.HasMore)
 	}
 
 	topIDs, err := s.rank.TopIDs(ctx, 200)
@@ -150,62 +192,75 @@ func (s *Service) HotPage(ctx context.Context, snapshotID string, lastVideoID ui
 		}
 		return &HotPage{Items: items, HasMore: false}, nil
 	}
-
-	var snapshot *HotFeedSnapshot
-	if s.snapshot != nil {
-		if snapshotID == "" {
-			snapshot, err = s.snapshot.Create(ctx, topIDs)
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			snapshot, err = s.snapshot.Get(ctx, snapshotID)
-			if err != nil {
-				return nil, err
-			}
-			if snapshot == nil {
-				snapshot, err = s.snapshot.Create(ctx, topIDs)
-				if err != nil {
-					return nil, err
-				}
-				lastVideoID = 0
-			}
-		}
-	} else {
-		snapshot = &HotFeedSnapshot{ID: "", IDs: topIDs, Created: time.Now().UTC()}
-	}
-
-	start := 0
-	if lastVideoID > 0 {
-		for i, id := range snapshot.IDs {
-			if id == lastVideoID {
-				start = i + 1
-				break
-			}
-		}
-	}
-	if start > len(snapshot.IDs) {
-		start = len(snapshot.IDs)
+	start := offset
+	if start >= len(topIDs) {
+		return &HotPage{Items: []Video{}, HasMore: false}, nil
 	}
 	end := start + limit
-	if end > len(snapshot.IDs) {
-		end = len(snapshot.IDs)
+	if end > len(topIDs) {
+		end = len(topIDs)
 	}
-	if start >= len(snapshot.IDs) {
-		return &HotPage{Items: []Video{}, SnapshotID: snapshot.ID, LastVideoID: 0, HasMore: false}, nil
-	}
+	return s.hotPageFromIDSlice(ctx, topIDs[start:end], "", end, end < len(topIDs))
+}
 
-	ids := snapshot.IDs[start:end]
-	items, err := s.repo.ListByIDs(ctx, ids)
+func (s *Service) hotPageFromSnapshot(ctx context.Context, snapshotID string, offset int, limit int) (*HotPage, error) {
+	page, err := s.snapshot.GetPage(ctx, snapshotID, offset, limit)
 	if err != nil {
 		return nil, err
 	}
-	hasMore := end < len(snapshot.IDs)
+	if page == nil {
+		return &HotPage{Items: []Video{}, SnapshotID: snapshotID, HasMore: false}, nil
+	}
+	return s.hotPageFromIDSlice(ctx, page.IDs, snapshotID, page.Offset, page.HasMore)
+}
+
+func (s *Service) hotPageFromIDSlice(ctx context.Context, ids []uint, snapshotID string, nextOffset int, hasMore bool) (*HotPage, error) {
+	if len(ids) == 0 {
+		return &HotPage{Items: []Video{}, SnapshotID: snapshotID, NextOffset: nextOffset, HasMore: hasMore}, nil
+	}
+	items, err := s.loadHotPageItems(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
 	var nextLastID uint
 	if len(items) > 0 {
 		nextLastID = items[len(items)-1].ID
 	}
-	return &HotPage{Items: items, SnapshotID: snapshot.ID, LastVideoID: nextLastID, HasMore: hasMore}, nil
+	return &HotPage{Items: items, SnapshotID: snapshotID, NextOffset: nextOffset, LastVideoID: nextLastID, HasMore: hasMore}, nil
+}
+
+func (s *Service) loadHotPageItems(ctx context.Context, ids []uint) ([]Video, error) {
+	if s.details == nil {
+		return s.repo.ListByIDs(ctx, ids)
+	}
+	hits, missing, err := s.details.GetMany(ctx, ids)
+	if err != nil {
+		return s.repo.ListByIDs(ctx, ids)
+	}
+	items := make([]Video, 0, len(ids))
+	byID := make(map[uint]Video, len(ids))
+	for id, raw := range hits {
+		var item Video
+		if err := json.Unmarshal(raw, &item); err == nil {
+			byID[id] = item
+		}
+	}
+	if len(missing) > 0 {
+		loaded, err := s.repo.ListByIDs(ctx, missing)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range loaded {
+			_ = s.details.Set(ctx, item.ID, item)
+			byID[item.ID] = item
+		}
+	}
+	for _, id := range ids {
+		if item, ok := byID[id]; ok {
+			items = append(items, item)
+		}
+	}
+	return items, nil
 }
 
 func (s *Service) RefreshHotScore(ctx context.Context, videoID uint, likeCount int64, commentCount int64) error {

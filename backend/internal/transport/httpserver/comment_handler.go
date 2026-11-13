@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"errors"
 	"strconv"
 
@@ -56,14 +57,21 @@ func (h *CommentHandler) Create(c *gin.Context) {
 		response.BadRequest(c, err)
 		return
 	}
-	comment, err := h.social.CreateComment(c.Request.Context(), userID, videoID, req.Content)
+	comment, err := h.social.CreateComment(c.Request.Context(), userID, videoID, req.Content, c.GetHeader("Idempotency-Key"))
 	if err != nil {
-		response.BadRequest(c, err)
+		switch {
+		case errors.Is(err, cache.ErrIdempotencyConflict):
+			response.Conflict(c, "idempotency key conflicts with previous request")
+		case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled), isPublishUnavailableError(err):
+			response.ServiceUnavailable(c, "interaction command is temporarily unavailable")
+		default:
+			response.BadRequest(c, err)
+		}
 		return
 	}
 	// Side effects (cache invalidation, hot score, comment count) are handled
 	// asynchronously by the Worker consuming the CommentCreated event.
-	response.Created(c, comment)
+	response.Accepted(c, comment)
 }
 
 func (h *CommentHandler) Delete(c *gin.Context) {
@@ -72,17 +80,27 @@ func (h *CommentHandler) Delete(c *gin.Context) {
 		response.Unauthorized(c, "login required")
 		return
 	}
-	commentID, err := strconv.ParseUint(c.Param("commentId"), 10, 64)
-	if err != nil || commentID == 0 {
+	commentID := c.Param("commentId")
+	if commentID == "" {
 		response.BadRequest(c, errors.New("invalid comment id"))
 		return
 	}
 
-	if err := h.social.DeleteComment(c.Request.Context(), uint(commentID), userID); err != nil {
-		response.BadRequest(c, err)
+	result, err := h.social.DeleteComment(c.Request.Context(), commentID, userID, c.GetHeader("Idempotency-Key"))
+	if err != nil {
+		switch {
+		case errors.Is(err, social.ErrCommentNotReady):
+			response.Conflict(c, "comment_not_ready")
+		case errors.Is(err, cache.ErrIdempotencyConflict):
+			response.Conflict(c, "idempotency key conflicts with previous request")
+		case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled), isPublishUnavailableError(err):
+			response.ServiceUnavailable(c, "interaction command is temporarily unavailable")
+		default:
+			response.BadRequest(c, err)
+		}
 		return
 	}
 	// Side effects (cache invalidation, hot score, comment count) are handled
 	// asynchronously by the Worker consuming the CommentDeleted event.
-	response.OK(c, gin.H{"deleted": true})
+	response.Accepted(c, result)
 }

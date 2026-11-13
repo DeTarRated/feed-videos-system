@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -16,6 +19,7 @@ import (
 	"feed-videos-system/backend/internal/infrastructure/mysql"
 	"feed-videos-system/backend/internal/infrastructure/redis"
 
+	amqp "github.com/rabbitmq/amqp091-go"
 	"gorm.io/gorm"
 )
 
@@ -69,12 +73,204 @@ func main() {
 	// Start periodic batch MySQL sync for likes.
 	go syncLoop(ctx, db, likeCache, 30*time.Second)
 
-	// Start 60-minute sliding window aggregation and cleanup.
-	go aggregateLoop(ctx, minuteWindow, time.Minute)
-	go cleanupLoop(ctx, minuteWindow, 5*time.Minute)
+	outcomeRepo := mysql.NewOutcomeRepository(db)
+	replayCache := cache.NewInteractionReplayCache(redisClient, cfg.InteractionMarkerTTL)
 
-	if err := consumeEvents(ctx, mqConn, cfg, likeCache, commentCache, videoDetailCache, minuteWindow, socialRepo); err != nil {
+	errCh := make(chan error, 2)
+	go func() {
+		errCh <- consumeCommands(ctx, mqConn, cfg, outcomeRepo, replayCache, likeCache, commentCache, videoDetailCache)
+	}()
+	go func() {
+		errCh <- consumeEvents(ctx, mqConn, cfg, likeCache, commentCache, videoDetailCache, minuteWindow, socialRepo)
+	}()
+
+	if err := <-errCh; err != nil {
 		log.Printf("worker stopped with error: %v", err)
+		cancel()
+	}
+}
+
+func consumeCommands(
+	ctx context.Context,
+	conn *mq.Connection,
+	cfg config.Config,
+	outcomeRepo *mysql.OutcomeRepository,
+	replayCache *cache.InteractionReplayCache,
+	likeCache *cache.LikeStateCache,
+	commentCache *cache.CommentCache,
+	videoDetailCache *cache.VideoDetailCache,
+) error {
+	ch, err := conn.Channel()
+	if err != nil {
+		return err
+	}
+	defer ch.Close()
+
+	topology := mq.CommandTopologyConfig{
+		Exchange:          cfg.RabbitMQCommandExchange,
+		LikeQueue:         cfg.RabbitMQLikeQueue,
+		LikeRoutingKey:    cfg.RabbitMQLikeRoutingKey,
+		CommentQueue:      cfg.RabbitMQCommentQueue,
+		CommentRoutingKey: cfg.RabbitMQCommentRoutingKey,
+		RetryQueue:        cfg.RabbitMQCommandRetryQueue,
+		RetryTTL:          cfg.RabbitMQCommandRetryTTL,
+		DLQ:               cfg.RabbitMQCommandDLQ,
+	}
+	if err := mq.DeclareCommandTopology(ch, topology); err != nil {
+		return err
+	}
+	if err := ch.Qos(cfg.RabbitMQCommandPrefetch, 0, false); err != nil {
+		return err
+	}
+	likeQueue := cfg.RabbitMQLikeQueue
+	commentQueue := cfg.RabbitMQCommentQueue
+
+	likeMsgs, err := ch.Consume(likeQueue, "", false, false, false, false, nil)
+	if err != nil {
+		return err
+	}
+	commentMsgs, err := ch.Consume(commentQueue, "", false, false, false, false, nil)
+	if err != nil {
+		return err
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case msg, ok := <-likeMsgs:
+			if !ok {
+				return nil
+			}
+			if err := handleCommandWithRetry(ctx, msg, outcomeRepo, replayCache, likeCache, commentCache, videoDetailCache, cfg.RabbitMQCommandRetryTTL); err != nil {
+				log.Printf("handle like command: %v", err)
+				nackCommand(msg, err)
+				continue
+			}
+			_ = msg.Ack(false)
+		case msg, ok := <-commentMsgs:
+			if !ok {
+				return nil
+			}
+			if err := handleCommandWithRetry(ctx, msg, outcomeRepo, replayCache, likeCache, commentCache, videoDetailCache, cfg.RabbitMQCommandRetryTTL); err != nil {
+				log.Printf("handle comment command: %v", err)
+				nackCommand(msg, err)
+				continue
+			}
+			_ = msg.Ack(false)
+		}
+	}
+}
+
+func handleCommandWithRetry(
+	ctx context.Context,
+	msg amqp.Delivery,
+	outcomeRepo *mysql.OutcomeRepository,
+	replayCache *cache.InteractionReplayCache,
+	likeCache *cache.LikeStateCache,
+	commentCache *cache.CommentCache,
+	videoDetailCache *cache.VideoDetailCache,
+	retryTTL time.Duration,
+) error {
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		lastErr = handleCommandMessage(ctx, msg, outcomeRepo, replayCache, likeCache, commentCache, videoDetailCache)
+		if lastErr == nil {
+			return nil
+		}
+		if isNonRetryableCommandError(lastErr) {
+			return lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(retryTTL):
+		}
+	}
+	return lastErr
+}
+
+func nackCommand(msg amqp.Delivery, cause error) {
+	// Command queues are declared with a dead-letter exchange pointing to the retry queue.
+	// Nack without requeue routes failed messages to retry; retry TTL routes them to the DLQ.
+	_ = cause
+	_ = msg.Nack(false, false)
+}
+
+func isNonRetryableCommandError(err error) bool {
+	var cmdErr *social.CommandError
+	if errors.As(err, &cmdErr) {
+		return cmdErr.NonRetryable
+	}
+	return false
+}
+
+func handleCommandMessage(
+	ctx context.Context,
+	msg amqp.Delivery,
+	outcomeRepo *mysql.OutcomeRepository,
+	replayCache *cache.InteractionReplayCache,
+	likeCache *cache.LikeStateCache,
+	commentCache *cache.CommentCache,
+	videoDetailCache *cache.VideoDetailCache,
+) error {
+	cmd, err := social.UnmarshalCommand(msg.Body)
+	if err != nil {
+		return social.NewNonRetryableCommandError(err)
+	}
+	now := time.Now().UTC()
+	var outcome *mysql.InteractionOutcome
+	switch cmd.Type {
+	case social.CommandLikeCreate, social.CommandLikeCancel:
+		outcome, err = outcomeRepo.ProcessLike(ctx, cmd, now)
+	case social.CommandCommentCreate:
+		outcome, err = outcomeRepo.ProcessCommentCreate(ctx, cmd, now)
+	case social.CommandCommentDelete:
+		outcome, err = outcomeRepo.ProcessCommentDelete(ctx, cmd, now)
+	default:
+		return social.NewNonRetryableCommandError(fmt.Errorf("unsupported command type: %s", cmd.Type))
+	}
+	if err != nil {
+		if errors.Is(err, mysql.ErrOutcomeFingerprintMismatch) {
+			return social.NewNonRetryableCommandError(err)
+		}
+		return err
+	}
+	if _, err := replayCache.ApplyOutcome(ctx, mysqlOutcomeToReplayView(*outcome, cmd)); err != nil {
+		return err
+	}
+
+	switch cmd.Type {
+	case social.CommandLikeCreate, social.CommandLikeCancel:
+		if outcome.DBOutcome == "applied" {
+			if err := likeCache.MarkDirty(ctx, cmd.VideoID); err != nil {
+				return err
+			}
+		}
+	case social.CommandCommentCreate:
+		_ = commentCache.DeleteFirstPage(ctx, cmd.VideoID)
+		_ = videoDetailCache.Delete(ctx, cmd.VideoID)
+	case social.CommandCommentDelete:
+		_ = commentCache.DeleteDetail(ctx, cmd.CommentID)
+		_ = commentCache.DeleteFirstPage(ctx, cmd.VideoID)
+		_ = videoDetailCache.Delete(ctx, cmd.VideoID)
+	}
+	return nil
+}
+
+func mysqlOutcomeToReplayView(outcome mysql.InteractionOutcome, cmd social.Command) cache.InteractionOutcomeView {
+	return cache.InteractionOutcomeView{
+		OperationID:  outcome.OperationID,
+		VideoID:      outcome.VideoID,
+		ActorID:      cmd.ActorID,
+		CommandType:  outcome.CommandType,
+		OpVersion:    outcome.OpVersion,
+		LikeCount:    outcome.LikeCount,
+		CommentCount: outcome.CommentCount,
+		StatsVersion: outcome.StatsVersion,
+		HeatDelta:    outcome.HeatDelta,
+		HeatMinute:   outcome.HeatMinute,
 	}
 }
 
@@ -210,64 +406,20 @@ func handleCommentEvent(
 		return nil
 
 	case social.EventCommentDeleted:
-		if err := socialRepo.DeleteComment(ctx, event.CommentID, event.ActorID); err != nil {
-			log.Printf("delete comment %d: %v", event.CommentID, err)
+		legacyCommentID := strconv.FormatUint(uint64(event.CommentID), 10)
+		if err := socialRepo.DeleteComment(ctx, legacyCommentID, event.ActorID); err != nil {
+			log.Printf("delete comment %s: %v", legacyCommentID, err)
 		}
 		if _, err := likeCache.IncrementCommentCount(ctx, event.VideoID, -1); err != nil {
 			return err
 		}
 		_ = commentCache.DeleteFirstPage(ctx, event.VideoID)
-		_ = commentCache.DeleteDetail(ctx, event.CommentID)
+		_ = commentCache.DeleteDetail(ctx, strconv.FormatUint(uint64(event.CommentID), 10))
 		_ = videoDetailCache.Delete(ctx, event.VideoID)
 		return nil
 
 	default:
 		return nil
-	}
-}
-
-// aggregateLoop periodically slides the 60-minute window:
-// adds the bucket from 1 minute ago, removes the bucket from 61 minutes ago.
-func aggregateLoop(ctx context.Context, w *cache.HotMinuteWindow, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			now := time.Now()
-			addMinute := now.Add(-1 * time.Minute)
-			removeMinute := now.Add(-61 * time.Minute)
-
-			if err := w.ApplyBucket(ctx, addMinute, +1); err != nil {
-				log.Printf("aggregate add bucket %s: %v", cache.MinuteKey(addMinute), err)
-			}
-			if err := w.ApplyBucket(ctx, removeMinute, -1); err != nil {
-				log.Printf("aggregate remove bucket %s: %v", cache.MinuteKey(removeMinute), err)
-			}
-			if err := w.DeleteBucket(ctx, removeMinute); err != nil {
-				log.Printf("delete bucket %s: %v", cache.MinuteKey(removeMinute), err)
-			}
-		}
-	}
-}
-
-// cleanupLoop periodically prunes the aggregate ZSET.
-func cleanupLoop(ctx context.Context, w *cache.HotMinuteWindow, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := w.Cleanup(ctx); err != nil {
-				log.Printf("cleanup hot window: %v", err)
-			}
-		}
 	}
 }
 

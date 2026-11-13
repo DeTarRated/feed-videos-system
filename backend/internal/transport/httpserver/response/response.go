@@ -23,6 +23,18 @@ func BadRequest(c *gin.Context, err error) {
 	c.JSON(http.StatusBadRequest, Body{Error: err.Error()})
 }
 
+func Accepted(c *gin.Context, data any) {
+	c.JSON(http.StatusAccepted, Body{Data: data})
+}
+
+func Conflict(c *gin.Context, message string) {
+	c.JSON(http.StatusConflict, Body{Error: message})
+}
+
+func ServiceUnavailable(c *gin.Context, message string) {
+	c.JSON(http.StatusServiceUnavailable, Body{Error: message})
+}
+
 func Unauthorized(c *gin.Context, message string) {
 	c.JSON(http.StatusUnauthorized, Body{Error: message})
 }
