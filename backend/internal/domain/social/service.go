@@ -63,7 +63,7 @@ func (s *Service) LikeVideo(ctx context.Context, userID uint, videoID uint, idem
 	if userID == 0 || videoID == 0 {
 		return nil, fmt.Errorf("user id and video id are required")
 	}
-	cmd, state, err := s.buildOrReuseCommand(ctx, CommandLikeCreate, userID, videoID, idempotencyKey, "", LikeStatusKey(userID, videoID))
+	cmd, state, err := s.buildOrReuseCommand(ctx, CommandLikeCreate, userID, videoID, idempotencyKey, "", LikeStatusKey(userID, videoID), "")
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +80,7 @@ func (s *Service) UnlikeVideo(ctx context.Context, userID uint, videoID uint, id
 	if userID == 0 || videoID == 0 {
 		return nil, fmt.Errorf("user id and video id are required")
 	}
-	cmd, state, err := s.buildOrReuseCommand(ctx, CommandLikeCancel, userID, videoID, idempotencyKey, "", LikeStatusKey(userID, videoID))
+	cmd, state, err := s.buildOrReuseCommand(ctx, CommandLikeCancel, userID, videoID, idempotencyKey, "", LikeStatusKey(userID, videoID), "")
 	if err != nil {
 		return nil, err
 	}
@@ -99,8 +99,8 @@ func (s *Service) Status(ctx context.Context, userID uint, videoID uint) (*LikeS
 	}
 
 	// Redis first: try cache for both values.
-	if liked, count, err := s.statusFromCache(ctx, userID, videoID); err == nil {
-		return &LikeStatus{VideoID: videoID, Liked: liked, LikeCount: count}, nil
+	if liked, count, opVersion, err := s.statusFromCache(ctx, userID, videoID); err == nil {
+		return &LikeStatus{VideoID: videoID, Liked: liked, LikeCount: count, OpVersion: opVersion}, nil
 	}
 
 	// Redis failed — fallback to MySQL, guarded by singleflight to prevent thundering herd.
@@ -116,32 +116,34 @@ func (s *Service) Status(ctx context.Context, userID uint, videoID uint) (*LikeS
 
 // statusFromCache reads the like status and count from Redis.
 // Returns a non-nil error if either call fails, so the caller falls back to MySQL.
-func (s *Service) statusFromCache(ctx context.Context, userID uint, videoID uint) (bool, int64, error) {
+func (s *Service) statusFromCache(ctx context.Context, userID uint, videoID uint) (bool, int64, string, error) {
 	if s.likeStateCache == nil {
-		return false, 0, fmt.Errorf("cache unavailable")
+		return false, 0, "", fmt.Errorf("cache unavailable")
 	}
 	var liked bool
+	var opVersion uint64
 	var err error
 	if userID > 0 {
-		liked, err = s.likeStateCache.IsLiked(ctx, videoID, userID)
+		liked, opVersion, err = s.likeStateCache.LikeUserState(ctx, videoID, userID)
 		if err != nil {
-			return false, 0, err
+			return false, 0, "", err
 		}
 	}
 	count, err := s.likeStateCache.GetLikeCount(ctx, videoID)
 	if err != nil {
-		return false, 0, err
+		return false, 0, "", err
 	}
-	return liked, count, nil
+	return liked, count, formatVersion(opVersion), nil
 }
 
 // statusFromDB reads the like status and count from MySQL.
 // Original Status() body, kept as the fallback path.
 func (s *Service) statusFromDB(ctx context.Context, userID uint, videoID uint) (*LikeStatus, error) {
 	liked := false
+	var opVersion uint64
 	var err error
 	if userID > 0 {
-		liked, err = s.repo.IsLiked(ctx, userID, videoID)
+		liked, opVersion, err = s.repo.LikeStateWithVersion(ctx, userID, videoID)
 		if err != nil {
 			return nil, err
 		}
@@ -150,7 +152,7 @@ func (s *Service) statusFromDB(ctx context.Context, userID uint, videoID uint) (
 	if err != nil {
 		return nil, err
 	}
-	return &LikeStatus{VideoID: videoID, Liked: liked, LikeCount: count}, nil
+	return &LikeStatus{VideoID: videoID, Liked: liked, LikeCount: count, OpVersion: formatVersion(opVersion)}, nil
 }
 
 func (s *Service) CountAuthorReceivedLikes(ctx context.Context, authorID uint) (int64, error) {
@@ -182,7 +184,8 @@ func (s *Service) CreateComment(ctx context.Context, userID uint, videoID uint, 
 		return nil, fmt.Errorf("comment content is too long")
 	}
 
-	cmd, state, err := s.buildOrReuseCommand(ctx, CommandCommentCreate, userID, videoID, idempotencyKey, content, CommentStatusKey(uuid.NewString()))
+	commentID := uuid.NewString()
+	cmd, state, err := s.buildOrReuseCommand(ctx, CommandCommentCreate, userID, videoID, idempotencyKey, content, CommentStatusKey(commentID), commentID)
 	if err != nil {
 		return nil, err
 	}
@@ -255,6 +258,20 @@ func (s *Service) DeleteComment(ctx context.Context, commentID string, userID ui
 		return nil, fmt.Errorf("comment id and user id are required")
 	}
 
+	// Check idempotency record first so a retry after successful delete can reuse the original command.
+	if record, err := s.idempotency.Get(ctx, cache.IdempotencyKey(userID, string(CommandCommentDelete), idempotencyKey)); err == nil && record != nil {
+		expectedFingerprint := RequestFingerprint(string(CommandCommentDelete), userID, 0, commentID)
+		if record.RequestFingerprint == expectedFingerprint {
+			var stored Command
+			if err := json.Unmarshal(record.Command, &stored); err == nil {
+				if err := s.publishCommandAndConfirm(ctx, s.commentRoutingKey, []byte(record.Body)); err == nil {
+					return &PendingCommentDelete{CommentID: commentID, Status: "pending", OperationID: stored.OperationID, OpVersion: formatVersion(stored.OpVersion)}, nil
+				}
+			}
+			return nil, cache.ErrIdempotencyConflict
+		}
+	}
+
 	comment, err := s.FindComment(ctx, commentID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -266,7 +283,7 @@ func (s *Service) DeleteComment(ctx context.Context, commentID string, userID ui
 		return nil, fmt.Errorf("permission denied")
 	}
 
-	cmd, state, err := s.buildOrReuseCommand(ctx, CommandCommentDelete, userID, comment.VideoID, idempotencyKey, "", CommentStatusKey(commentID))
+	cmd, state, err := s.buildOrReuseCommand(ctx, CommandCommentDelete, userID, comment.VideoID, idempotencyKey, "", CommentStatusKey(commentID), commentID)
 	if err != nil {
 		return nil, err
 	}
@@ -361,12 +378,12 @@ const (
 	commandStateReused
 )
 
-func (s *Service) buildOrReuseCommand(ctx context.Context, commandType CommandType, userID uint, videoID uint, idempotencyKey string, content string, versionKey string) (Command, commandReuseState, error) {
-	commentID := ""
-	if commandType == CommandCommentCreate {
-		commentID = uuid.NewString()
+func (s *Service) buildOrReuseCommand(ctx context.Context, commandType CommandType, userID uint, videoID uint, idempotencyKey string, content string, versionKey string, commentID string) (Command, commandReuseState, error) {
+	fingerprintVideoID := videoID
+	if commandType == CommandCommentDelete {
+		fingerprintVideoID = 0
 	}
-	fingerprint := RequestFingerprint(string(commandType), userID, videoID, content)
+	fingerprint := RequestFingerprint(string(commandType), userID, fingerprintVideoID, fingerprintContent(commandType, commentID, content))
 	idemKey := cache.IdempotencyKey(userID, string(commandType), idempotencyKey)
 	if record, err := s.idempotency.Get(ctx, idemKey); err == nil && record != nil {
 		if record.RequestFingerprint != fingerprint {
@@ -403,6 +420,13 @@ func (s *Service) buildOrReuseCommand(ctx context.Context, commandType CommandTy
 		return Command{}, 0, err
 	}
 	return cmd, commandStateCreated, nil
+}
+
+func fingerprintContent(commandType CommandType, commentID, content string) string {
+	if commandType == CommandCommentDelete {
+		return commentID
+	}
+	return content
 }
 
 func (s *Service) routingKeyFor(commandType CommandType) string {

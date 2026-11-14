@@ -31,7 +31,7 @@ type Comment struct {
 	UserNickname       string     `gorm:"column:user_nickname;->" json:"userNickname"`
 	VideoID            uint       `gorm:"index;not null" json:"videoId"`
 	Content            string     `gorm:"size:500;not null" json:"content"`
-	OpVersion          uint64     `gorm:"column:op_version" json:"-"`
+	OpVersion          uint64     `gorm:"column:op_version" json:"opVersion,string"`
 	OperationID        string     `gorm:"column:operation_id" json:"-"`
 	RequestFingerprint string     `gorm:"column:request_fingerprint" json:"-"`
 	CreatedAt          time.Time  `json:"createdAt"`

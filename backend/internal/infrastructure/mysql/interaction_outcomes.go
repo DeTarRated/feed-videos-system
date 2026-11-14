@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"feed-videos-system/backend/internal/domain/social"
 )
@@ -123,13 +124,14 @@ func (r *OutcomeRepository) ProcessCommentCreate(ctx context.Context, cmd social
 			return createErr
 		}
 
-		stats, err := getVideoStatsTx(tx, cmd.VideoID)
+		var stats *VideoStats
+		if isDuplicateEntry(createErr) {
+			stats, err = getVideoStatsTx(tx, cmd.VideoID)
+		} else {
+			stats, err = atomicUpdateStatsTx(tx, cmd.VideoID, 0, 1)
+		}
 		if err != nil {
 			return err
-		}
-		if !isDuplicateEntry(createErr) {
-			stats.CommentCount++
-			stats.StatsVersion++
 		}
 
 		heatDelta := int64(0)
@@ -153,9 +155,6 @@ func (r *OutcomeRepository) ProcessCommentCreate(ctx context.Context, cmd social
 			HeatDelta:          heatDelta,
 			HeatMinute:         heatMinute,
 			CreatedAt:          now,
-		}
-		if err := saveVideoStatsTx(tx, stats); err != nil {
-			return err
 		}
 		return tx.Create(outcome).Error
 	})
@@ -185,13 +184,15 @@ func (r *OutcomeRepository) ProcessCommentDelete(ctx context.Context, cmd social
 			return result.Error
 		}
 
-		stats, err := getVideoStatsTx(tx, cmd.VideoID)
+		var stats *VideoStats
+		var err error
+		if result.RowsAffected > 0 {
+			stats, err = atomicUpdateStatsTx(tx, cmd.VideoID, 0, -1)
+		} else {
+			stats, err = getVideoStatsTx(tx, cmd.VideoID)
+		}
 		if err != nil {
 			return err
-		}
-		if result.RowsAffected > 0 {
-			stats.CommentCount--
-			stats.StatsVersion++
 		}
 
 		*outcome = InteractionOutcome{
@@ -209,9 +210,6 @@ func (r *OutcomeRepository) ProcessCommentDelete(ctx context.Context, cmd social
 			HeatDelta:          0,
 			HeatMinute:         "",
 			CreatedAt:          now,
-		}
-		if err := saveVideoStatsTx(tx, stats); err != nil {
-			return err
 		}
 		return tx.Create(outcome).Error
 	})
@@ -276,17 +274,18 @@ func (r *OutcomeRepository) ProcessLike(ctx context.Context, cmd social.Command,
 			}
 		}
 
-		stats, err := getVideoStatsTx(tx, cmd.VideoID)
+		var stats *VideoStats
+		if changed {
+			likeDelta := int64(-1)
+			if targetLiked {
+				likeDelta = 1
+			}
+			stats, err = atomicUpdateStatsTx(tx, cmd.VideoID, likeDelta, 0)
+		} else {
+			stats, err = getVideoStatsTx(tx, cmd.VideoID)
+		}
 		if err != nil {
 			return err
-		}
-		if changed {
-			if targetLiked {
-				stats.LikeCount++
-			} else {
-				stats.LikeCount--
-			}
-			stats.StatsVersion++
 		}
 
 		heatDelta := int64(0)
@@ -312,9 +311,6 @@ func (r *OutcomeRepository) ProcessLike(ctx context.Context, cmd social.Command,
 			HeatMinute:         heatMinute,
 			CreatedAt:          now,
 		}
-		if err := saveVideoStatsTx(tx, stats); err != nil {
-			return err
-		}
 		return tx.Create(outcome).Error
 	})
 	if err != nil {
@@ -334,7 +330,7 @@ func getOutcomeTx(tx *gorm.DB, operationID string) (*InteractionOutcome, error) 
 
 func getVideoStatsTx(tx *gorm.DB, videoID uint) (*VideoStats, error) {
 	var stats VideoStats
-	err := tx.Where("video_id = ?", videoID).First(&stats).Error
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("video_id = ?", videoID).First(&stats).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return &VideoStats{VideoID: videoID}, nil
@@ -344,9 +340,24 @@ func getVideoStatsTx(tx *gorm.DB, videoID uint) (*VideoStats, error) {
 	return &stats, nil
 }
 
-func saveVideoStatsTx(tx *gorm.DB, stats *VideoStats) error {
-	stats.UpdatedAt = time.Now()
-	return tx.Save(stats).Error
+// atomicUpdateStatsTx atomically applies count deltas and returns the updated stats.
+// Uses INSERT ... ON DUPLICATE KEY UPDATE to avoid read-modify-write races.
+func atomicUpdateStatsTx(tx *gorm.DB, videoID uint, likeDelta, commentDelta int64) (*VideoStats, error) {
+	now := time.Now()
+	// Ensure row exists
+	if err := tx.Exec(`INSERT IGNORE INTO video_stats (video_id, like_count, comment_count, stats_version, updated_at) VALUES (?, 0, 0, 0, ?)`, videoID, now).Error; err != nil {
+		return nil, err
+	}
+	// Atomically apply deltas
+	if err := tx.Exec(`UPDATE video_stats SET like_count = like_count + ?, comment_count = comment_count + ?, stats_version = stats_version + 1, updated_at = ? WHERE video_id = ?`, likeDelta, commentDelta, now, videoID).Error; err != nil {
+		return nil, err
+	}
+	// Read back with lock
+	var stats VideoStats
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("video_id = ?", videoID).First(&stats).Error; err != nil {
+		return nil, err
+	}
+	return &stats, nil
 }
 
 func isDuplicateEntry(err error) bool {

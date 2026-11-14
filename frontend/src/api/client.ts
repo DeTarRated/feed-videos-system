@@ -56,6 +56,9 @@ export type LikeStatus = {
   videoId: number
   liked: boolean
   likeCount: number
+  status?: string
+  operationId?: string
+  opVersion?: string
 }
 
 export type FollowStatus = {
@@ -73,28 +76,70 @@ export type FollowUser = {
 }
 
 export type Comment = {
-  id: number
+  id: string
   userId: number
   userNickname: string
   videoId: number
   content: string
+  opVersion?: string
   createdAt: string
   updatedAt: string
+  pending?: boolean
+  pendingOperationId?: string
+  pendingDelete?: boolean
+}
+
+export type PendingComment = {
+  id: string
+  videoId: number
+  content: string
+  status: string
+  operationId: string
+  opVersion: string
+  createdAt: string
+}
+
+export type PendingCommentDelete = {
+  commentId: string
+  status: string
+  operationId: string
+  opVersion: string
+}
+
+export class ApiError extends Error {
+  status: number
+  code?: string
+
+  constructor(status: number, message: string, code?: string) {
+    super(message)
+    this.status = status
+    this.code = code
+  }
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const { headers: optionHeaders, ...rest } = options
   const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...rest,
     headers: {
       'Content-Type': 'application/json',
-      ...(options.headers || {}),
+      ...(optionHeaders || {}),
     },
-    ...options,
   })
   const body = (await response.json()) as ApiResponse<T>
   if (!response.ok) {
-    throw new Error(body.error || 'request failed')
+    const message = body.error || 'request failed'
+    const code = message === 'comment_not_ready' ? 'comment_not_ready' : undefined
+    throw new ApiError(response.status, message, code)
   }
   return body.data as T
+}
+
+function newIdempotencyKey(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
 async function upload(path: string, token: string, file: File): Promise<UploadResult> {
@@ -154,11 +199,12 @@ export function listVideos(options: { limit?: number; cursor?: string } = {}) {
 export type HotPage = {
   items: Video[]
   snapshotId: string
+  nextOffset: number
   lastVideoId: number
   hasMore: boolean
 }
 
-export function listHotVideos(options: { limit?: number; snapshotId?: string; lastVideoId?: string } = {}) {
+export function listHotVideos(options: { limit?: number; snapshotId?: string; offset?: number } = {}) {
   const params = new URLSearchParams()
   if (options.limit) {
     params.set('limit', String(options.limit))
@@ -166,8 +212,8 @@ export function listHotVideos(options: { limit?: number; snapshotId?: string; la
   if (options.snapshotId) {
     params.set('snapshotId', options.snapshotId)
   }
-  if (options.lastVideoId) {
-    params.set('lastVideoId', options.lastVideoId)
+  if (options.offset !== undefined) {
+    params.set('offset', String(options.offset))
   }
   const query = params.toString()
   return request<HotPage>(`/feed/hot${query ? `?${query}` : ''}`)
@@ -185,43 +231,49 @@ export function getVideoLikeStatus(id: string, token?: string) {
   } : undefined)
 }
 
-export function likeVideo(token: string, id: string) {
+export function likeVideo(token: string, id: string, idempotencyKey?: string) {
   return request<LikeStatus>(`/videos/${id}/like`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
+      ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
     },
   })
 }
 
-export function unlikeVideo(token: string, id: string) {
+export function unlikeVideo(token: string, id: string, idempotencyKey?: string) {
   return request<LikeStatus>(`/videos/${id}/like`, {
     method: 'DELETE',
     headers: {
       Authorization: `Bearer ${token}`,
+      ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
     },
   })
 }
+
+export { newIdempotencyKey }
 
 export function listComments(id: string, limit = 50) {
   return request<{ items: Comment[] }>(`/videos/${id}/comments?limit=${limit}`)
 }
 
-export function createComment(token: string, id: string, content: string) {
-  return request<Comment>(`/videos/${id}/comments`, {
+export function createComment(token: string, id: string, content: string, idempotencyKey?: string) {
+  return request<PendingComment>(`/videos/${id}/comments`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
+      ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
     },
     body: JSON.stringify({ content }),
   })
 }
 
-export function deleteComment(token: string, videoId: string, commentId: number) {
-  return request<{ deleted: boolean }>(`/videos/${videoId}/comments/${commentId}`, {
+export function deleteComment(token: string, videoId: string, commentId: string, idempotencyKey?: string) {
+  return request<PendingCommentDelete>(`/videos/${videoId}/comments/${commentId}`, {
     method: 'DELETE',
     headers: {
       Authorization: `Bearer ${token}`,
+      ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
     },
   })
 }

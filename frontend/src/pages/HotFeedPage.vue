@@ -5,7 +5,7 @@ import { listHotVideos, resolveMediaUrl, type Video } from '../api/client'
 
 const items = ref<Video[]>([])
 const snapshotId = ref('')
-const lastVideoId = ref(0)
+const nextOffset = ref(0)
 const hasMore = ref(false)
 const loading = ref(false)
 const loadingMore = ref(false)
@@ -21,7 +21,7 @@ async function load() {
     const result = await listHotVideos({ limit: 10 })
     items.value = result.items || []
     snapshotId.value = result.snapshotId || ''
-    lastVideoId.value = result.lastVideoId || 0
+    nextOffset.value = result.nextOffset || 0
     hasMore.value = result.hasMore
     activeIndex.value = 0
   } catch (err) {
@@ -32,16 +32,22 @@ async function load() {
 }
 
 async function loadMore() {
-  if (!hasMore.value || !snapshotId.value || !lastVideoId.value || loadingMore.value) {
+  if (!hasMore.value || !snapshotId.value || loadingMore.value) {
     return
   }
   loadingMore.value = true
   error.value = ''
   try {
-    const result = await listHotVideos({ limit: 10, snapshotId: snapshotId.value, lastVideoId: String(lastVideoId.value) })
-    items.value = [...items.value, ...(result.items || [])]
-    snapshotId.value = result.snapshotId || snapshotId.value
-    lastVideoId.value = result.lastVideoId || lastVideoId.value
+    const result = await listHotVideos({ limit: 10, snapshotId: snapshotId.value, offset: nextOffset.value })
+    if (result.snapshotId !== snapshotId.value) {
+      // Snapshot changed (expired); replace list with new snapshot's first page.
+      items.value = result.items || []
+      snapshotId.value = result.snapshotId || ''
+      activeIndex.value = 0
+    } else {
+      items.value = [...items.value, ...(result.items || [])]
+    }
+    nextOffset.value = result.nextOffset || nextOffset.value
     hasMore.value = result.hasMore
   } catch (err) {
     error.value = err instanceof Error ? err.message : '加载失败'

@@ -2,6 +2,9 @@ ALTER TABLE likes
   ADD COLUMN op_version BIGINT UNSIGNED NOT NULL DEFAULT 0,
   ADD KEY idx_likes_video_version (video_id, op_version);
 
+CREATE TABLE IF NOT EXISTS comments_backup_005 AS
+SELECT * FROM comments;
+
 ALTER TABLE comments
   ADD COLUMN op_version BIGINT UNSIGNED NOT NULL DEFAULT 0,
   ADD COLUMN operation_id VARCHAR(64) NULL,

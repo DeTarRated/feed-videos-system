@@ -161,6 +161,24 @@ func (c *LikeStateCache) GetCommentCount(ctx context.Context, videoID uint) (int
 	return value, nil
 }
 
+func (c *LikeStateCache) LikeUserState(ctx context.Context, videoID, userID uint) (liked bool, opVersion uint64, err error) {
+	if c == nil || c.client == nil {
+		return false, 0, nil
+	}
+	values, err := c.client.HMGet(ctx, LikeUserStateKey(videoID, userID), "liked", "op_version").Result()
+	if err != nil {
+		return false, 0, err
+	}
+	if values[0] == nil {
+		return false, 0, fmt.Errorf("like user state not found")
+	}
+	liked = values[0].(string) == "1"
+	if values[1] != nil {
+		opVersion, _ = strconv.ParseUint(values[1].(string), 10, 64)
+	}
+	return liked, opVersion, nil
+}
+
 func (c *LikeStateCache) IsLiked(ctx context.Context, videoID, userID uint) (bool, error) {
 	if c == nil || c.client == nil {
 		return false, nil
@@ -240,6 +258,10 @@ func (c *LikeStateCache) ClearDirty(ctx context.Context, videoID uint) error {
 		return nil
 	}
 	return c.client.SRem(ctx, LikeDirtyVideosKey(), videoID).Err()
+}
+
+func LikeUserStateKey(videoID, userID uint) string {
+	return fmt.Sprintf("like:state:%d:%d", videoID, userID)
 }
 
 func LikeVideoUsersKey(videoID uint) string {

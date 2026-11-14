@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -228,6 +229,31 @@ func (r *SocialRepository) CountFollowing(ctx context.Context, userID uint) (int
 		Where("follower_id = ? AND deleted_at IS NULL", userID).
 		Count(&count).Error
 	return count, err
+}
+
+func (r *SocialRepository) LikeStateWithVersion(ctx context.Context, userID, videoID uint) (liked bool, opVersion uint64, err error) {
+	var like social.Like
+	err = r.db.WithContext(ctx).
+		Model(&social.Like{}).
+		Where("user_id = ? AND video_id = ?", userID, videoID).
+		First(&like).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, 0, nil
+		}
+		return false, 0, err
+	}
+	return like.DeletedAt == nil, like.OpVersion, nil
+}
+
+func (r *SocialRepository) LikeOpVersion(ctx context.Context, userID, videoID uint) (uint64, error) {
+	var version uint64
+	err := r.db.WithContext(ctx).
+		Model(&social.Like{}).
+		Select("COALESCE(MAX(op_version), 0)").
+		Where("user_id = ? AND video_id = ?", userID, videoID).
+		Scan(&version).Error
+	return version, err
 }
 
 func (r *SocialRepository) LastCommittedVersion(ctx context.Context, key string) (uint64, error) {
