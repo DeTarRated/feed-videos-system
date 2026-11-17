@@ -22,77 +22,6 @@ func NewSocialRepository(db *gorm.DB) *SocialRepository {
 	return &SocialRepository{db: db}
 }
 
-func (r *SocialRepository) LikeVideo(ctx context.Context, userID uint, videoID uint) error {
-	now := time.Now()
-	item := social.Like{
-		UserID:    userID,
-		VideoID:   videoID,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "user_id"}, {Name: "video_id"}},
-		DoUpdates: clause.Assignments(map[string]any{
-			"deleted_at": nil,
-			"updated_at": now,
-		}),
-	}).Create(&item).Error
-}
-
-func (r *SocialRepository) BatchUpsertLikes(ctx context.Context, videoID uint, userIDs []uint) error {
-	if len(userIDs) == 0 {
-		return nil
-	}
-	now := time.Now()
-	items := make([]social.Like, 0, len(userIDs))
-	for _, uid := range userIDs {
-		items = append(items, social.Like{
-			UserID:    uid,
-			VideoID:   videoID,
-			CreatedAt: now,
-			UpdatedAt: now,
-		})
-	}
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "user_id"}, {Name: "video_id"}},
-		DoUpdates: clause.Assignments(map[string]any{
-			"deleted_at": nil,
-			"updated_at": now,
-		}),
-	}).Create(&items).Error
-}
-
-func (r *SocialRepository) DeleteLikesNotInSet(ctx context.Context, videoID uint, userIDs []uint) error {
-	now := time.Now()
-	if len(userIDs) == 0 {
-		return r.db.WithContext(ctx).
-			Model(&social.Like{}).
-			Where("video_id = ? AND deleted_at IS NULL", videoID).
-			Updates(map[string]any{"deleted_at": now, "updated_at": now}).Error
-	}
-	return r.db.WithContext(ctx).
-		Model(&social.Like{}).
-		Where("video_id = ? AND deleted_at IS NULL AND user_id NOT IN ?", videoID, userIDs).
-		Updates(map[string]any{"deleted_at": now, "updated_at": now}).Error
-}
-
-func (r *SocialRepository) UnlikeVideo(ctx context.Context, userID uint, videoID uint) error {
-	now := time.Now()
-	return r.db.WithContext(ctx).
-		Model(&social.Like{}).
-		Where("user_id = ? AND video_id = ? AND deleted_at IS NULL", userID, videoID).
-		Updates(map[string]any{"deleted_at": now, "updated_at": now}).Error
-}
-
-func (r *SocialRepository) IsLiked(ctx context.Context, userID uint, videoID uint) (bool, error) {
-	var count int64
-	err := r.db.WithContext(ctx).
-		Model(&social.Like{}).
-		Where("user_id = ? AND video_id = ? AND deleted_at IS NULL", userID, videoID).
-		Count(&count).Error
-	return count > 0, err
-}
-
 func (r *SocialRepository) CountVideoLikes(ctx context.Context, videoID uint) (int64, error) {
 	var count int64
 	err := r.db.WithContext(ctx).
@@ -244,16 +173,6 @@ func (r *SocialRepository) LikeStateWithVersion(ctx context.Context, userID, vid
 		return false, 0, err
 	}
 	return like.DeletedAt == nil, like.OpVersion, nil
-}
-
-func (r *SocialRepository) LikeOpVersion(ctx context.Context, userID, videoID uint) (uint64, error) {
-	var version uint64
-	err := r.db.WithContext(ctx).
-		Model(&social.Like{}).
-		Select("COALESCE(MAX(op_version), 0)").
-		Where("user_id = ? AND video_id = ?", userID, videoID).
-		Scan(&version).Error
-	return version, err
 }
 
 func (r *SocialRepository) LastCommittedVersion(ctx context.Context, key string) (uint64, error) {

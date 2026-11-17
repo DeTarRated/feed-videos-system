@@ -13,9 +13,7 @@ var applyInteractionScript = goredis.NewScript(`
 	local marker_key = KEYS[1]
 	local stats_key = KEYS[2]
 	local minute_key = KEYS[3]
-	local like_users_key = KEYS[4]
-	local like_user_videos_key = KEYS[5]
-	local like_user_state_key = KEYS[6]
+	local like_user_state_key = KEYS[4]
 
 	local operation_id = ARGV[1]
 	local video_id = ARGV[2]
@@ -40,15 +38,11 @@ var applyInteractionScript = goredis.NewScript(`
 	end
 
 	if command_type == 'like.create' or command_type == 'like.cancel' then
+		local liked = '0'
 		if command_type == 'like.create' then
-			redis.call('SADD', like_users_key, actor_id)
-			redis.call('SADD', like_user_videos_key, video_id)
-			redis.call('HSET', like_user_state_key, 'liked', '1', 'op_version', op_version)
-		else
-			redis.call('SREM', like_users_key, actor_id)
-			redis.call('SREM', like_user_videos_key, video_id)
-			redis.call('HSET', like_user_state_key, 'liked', '0', 'op_version', op_version)
+			liked = '1'
 		end
+		redis.call('HSET', like_user_state_key, 'liked', liked, 'op_version', op_version)
 		if ttl_seconds > 0 then
 			redis.call('EXPIRE', like_user_state_key, ttl_seconds)
 		end
@@ -60,8 +54,6 @@ var applyInteractionScript = goredis.NewScript(`
 		'stats_version', stats_version)
 	if ttl_seconds > 0 then
 		redis.call('EXPIRE', stats_key, ttl_seconds)
-		redis.call('EXPIRE', like_users_key, ttl_seconds)
-		redis.call('EXPIRE', like_user_videos_key, ttl_seconds)
 	end
 
 	if heat_delta ~= 0 and heat_minute ~= '' then
@@ -91,8 +83,6 @@ func (c *InteractionReplayCache) ApplyOutcome(ctx context.Context, outcome Inter
 		InteractionMarkerKey(outcome.OperationID),
 		LikeVideoStatsKey(outcome.VideoID),
 		MinuteBucketKey(outcome.HeatMinute),
-		LikeVideoUsersKey(outcome.VideoID),
-		LikeUserVideosKey(outcome.ActorID),
 		LikeUserStateKey(outcome.VideoID, outcome.ActorID),
 	}
 	result, err := applyInteractionScript.Run(ctx, c.client, keys,

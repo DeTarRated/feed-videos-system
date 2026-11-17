@@ -43,18 +43,13 @@ func New(cfg config.Config, db *gorm.DB, redisClient *goredis.Client, mqConn *mq
 	videoRepo := mysql.NewVideoRepository(db)
 	socialRepo := mysql.NewSocialRepository(db)
 	store := storage.NewLocalStore(cfg.StorageDir)
-	publisher, err := mq.NewPublisher(mqConn, cfg.RabbitMQExchange, cfg.RabbitMQRoutingKey)
-	if err != nil {
-		return nil, err
-	}
 	commandPublisher, err := mq.NewPublisher(mqConn, cfg.RabbitMQCommandExchange, cfg.RabbitMQLikeRoutingKey)
 	if err != nil {
-		_ = publisher.Close()
 		return nil, err
 	}
 	idempotency := cache.NewIdempotencyStore(redisClient, cfg.IdempotencyTTL)
 	versioner := cache.NewVersionSequencer(redisClient, socialRepo)
-	likeStateCache := cache.NewLikeStateCache(redisClient, 30*time.Minute)
+	likeStateCache := cache.NewLikeStateCache(redisClient)
 	commentCache := cache.NewCommentCache(redisClient, 5*time.Minute)
 	hotWindow := cache.NewHotMinuteWindow(redisClient, 70*time.Minute)
 

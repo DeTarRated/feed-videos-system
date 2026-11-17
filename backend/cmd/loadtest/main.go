@@ -10,9 +10,12 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 type Config struct {
@@ -22,6 +25,10 @@ type Config struct {
 	Duration     time.Duration
 	Workers      int
 	CommentRatio float64
+	JWTSecret    string
+	UserIDStart  int
+	SeedOnly     bool
+	Mode         string
 }
 
 type Metrics struct {
@@ -104,22 +111,48 @@ func main() {
 	flag.DurationVar(&cfg.Duration, "duration", 30*time.Second, "Test duration")
 	flag.IntVar(&cfg.Workers, "workers", 20, "Concurrent workers")
 	flag.Float64Var(&cfg.CommentRatio, "comment-ratio", 0.15, "Comment ratio (0-1)")
+	flag.StringVar(&cfg.JWTSecret, "jwt-secret", "", "If set, mint tokens locally for user IDs instead of register/login (bypasses auth rate limits)")
+	flag.IntVar(&cfg.UserIDStart, "user-id-start", 1, "First user ID when -jwt-secret is set")
+	flag.BoolVar(&cfg.SeedOnly, "seed-only", false, "Only mint tokens and exit (sanity check)")
+	flag.StringVar(&cfg.Mode, "mode", "mixed", "Traffic mode: mixed | read | like | comment")
 	flag.Parse()
 
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Duration+60*time.Second)
 	defer cancel()
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	transport := &http.Transport{
+		MaxIdleConns:        cfg.Workers * 2,
+		MaxIdleConnsPerHost: cfg.Workers * 2,
+		MaxConnsPerHost:     0,
+		IdleConnTimeout:     90 * time.Second,
+		DisableCompression:  true,
+	}
+	client := &http.Client{Timeout: 10 * time.Second, Transport: transport}
 
 	tokens := make([]string, cfg.Users)
-	for i := 0; i < cfg.Users; i++ {
-		username := fmt.Sprintf("loaduser%d", i)
-		token, err := loginUser(client, cfg.BaseURL, username)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "user %d login failed: %v\n", i, err)
-			continue
+	if cfg.JWTSecret != "" {
+		for i := 0; i < cfg.Users; i++ {
+			token, err := mintToken(cfg.JWTSecret, uint(cfg.UserIDStart+i))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "mint token %d: %v\n", i, err)
+				continue
+			}
+			tokens[i] = token
 		}
-		tokens[i] = token
+	} else {
+		for i := 0; i < cfg.Users; i++ {
+			username := fmt.Sprintf("loaduser%d", i)
+			token, err := loginUser(client, cfg.BaseURL, username)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "user %d login failed: %v\n", i, err)
+				continue
+			}
+			tokens[i] = token
+		}
+	}
+	if cfg.SeedOnly {
+		fmt.Printf("minted %d tokens (user ids %d..%d)\n", cfg.Users, cfg.UserIDStart, cfg.UserIDStart+cfg.Users-1)
+		return
 	}
 
 	deadline := time.Now().Add(cfg.Duration)
@@ -161,16 +194,27 @@ func main() {
 			start := time.Now()
 			var statusCode int
 			var err error
-			r := float64(idx%1000) / 1000.0
-			switch {
-			case r < cfg.CommentRatio:
-				statusCode, err = doComment(client, cfg.BaseURL, token, cfg.VideoID, idx)
-			case r < cfg.CommentRatio+0.1:
+			switch cfg.Mode {
+			case "read":
 				statusCode, err = doRead(client, cfg.BaseURL, cfg.VideoID, idx)
-			default:
+			case "like":
 				userKey := idx % len(tokens)
 				count := toggleCounters[userKey].Add(1)
 				statusCode, err = doLikeToggle(client, cfg.BaseURL, token, cfg.VideoID, userKey, int(count))
+			case "comment":
+				statusCode, err = doComment(client, cfg.BaseURL, token, cfg.VideoID, idx)
+			default:
+				r := float64(idx%1000) / 1000.0
+				switch {
+				case r < cfg.CommentRatio:
+					statusCode, err = doComment(client, cfg.BaseURL, token, cfg.VideoID, idx)
+				case r < cfg.CommentRatio+0.1:
+					statusCode, err = doRead(client, cfg.BaseURL, cfg.VideoID, idx)
+				default:
+					userKey := idx % len(tokens)
+					count := toggleCounters[userKey].Add(1)
+					statusCode, err = doLikeToggle(client, cfg.BaseURL, token, cfg.VideoID, userKey, int(count))
+				}
 			}
 			metrics.record(time.Since(start), statusCode, err)
 		}(userIdx)
@@ -186,10 +230,29 @@ done:
 		"workers":       cfg.Workers,
 		"duration":      cfg.Duration.String(),
 		"comment_ratio": cfg.CommentRatio,
+		"mode":          cfg.Mode,
 		"base_url":      cfg.BaseURL,
 	}
 	out, _ := json.MarshalIndent(report, "", "  ")
 	fmt.Println(string(out))
+}
+
+type jwtClaims struct {
+	UserID uint `json:"userId"`
+	jwt.RegisteredClaims
+}
+
+func mintToken(secret string, userID uint) (string, error) {
+	now := time.Now()
+	claims := jwtClaims{
+		UserID: userID,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   strconv.FormatUint(uint64(userID), 10),
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(24 * time.Hour)),
+		},
+	}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
 }
 
 func loginUser(client *http.Client, baseURL, username string) (string, error) {

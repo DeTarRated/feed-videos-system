@@ -2,7 +2,6 @@ package mq
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -11,7 +10,6 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	"feed-videos-system/backend/internal/config"
-	"feed-videos-system/backend/internal/domain/social"
 )
 
 type Connection struct {
@@ -30,13 +28,6 @@ type Publisher struct {
 	pending   map[uint64]chan amqp.Confirmation
 	done      chan struct{}
 	closeOnce sync.Once
-}
-
-type Consumer struct {
-	conn     *Connection
-	queue    string
-	exchange string
-	routing  string
 }
 
 func (p *Publisher) Channel() *amqp.Channel { return p.channel }
@@ -207,59 +198,6 @@ func NewPublisher(conn *Connection, exchange, routingKey string) (*Publisher, er
 	}
 	go p.consumeConfirmations()
 	return p, nil
-}
-
-func NewConsumer(conn *Connection, queue, exchange, routingKey string) *Consumer {
-	return &Consumer{conn: conn, queue: queue, exchange: exchange, routing: routingKey}
-}
-
-func (p *Publisher) PublishCommentEvent(ctx context.Context, event social.Event) error {
-	if p == nil || p.conn == nil {
-		return fmt.Errorf("rabbitmq publisher is nil")
-	}
-	body, err := json.Marshal(event)
-	if err != nil {
-		return err
-	}
-	return PublishJSON(ctx, p.channel, p.exchange, p.routing, body)
-}
-
-func (p *Publisher) PublishLikeEvent(ctx context.Context, event social.Event) error {
-	if p == nil || p.conn == nil {
-		return fmt.Errorf("rabbitmq publisher is nil")
-	}
-	body, err := json.Marshal(event)
-	if err != nil {
-		return err
-	}
-	return PublishJSON(ctx, p.channel, p.exchange, p.routing, body)
-}
-
-func (c *Consumer) Setup() (string, error) {
-	if c == nil || c.conn == nil {
-		return "", fmt.Errorf("rabbitmq connection is nil")
-	}
-	ch, err := c.conn.Channel()
-	if err != nil {
-		return "", err
-	}
-	defer ch.Close()
-
-	if err := DeclareExchange(ch, c.exchange); err != nil {
-		return "", err
-	}
-	queue, err := DeclareQueue(ch, c.queue)
-	if err != nil {
-		return "", err
-	}
-	if err := ch.QueueBind(queue.Name, c.routing, c.exchange, false, nil); err != nil {
-		return "", err
-	}
-	return queue.Name, nil
-}
-
-func DeclareQueue(ch *amqp.Channel, queue string) (amqp.Queue, error) {
-	return ch.QueueDeclare(queue, true, false, false, false, nil)
 }
 
 func DeclareCommandTopology(ch *amqp.Channel, cfg CommandTopologyConfig) error {

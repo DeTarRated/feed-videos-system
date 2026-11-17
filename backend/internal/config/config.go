@@ -54,11 +54,6 @@ func Load() Config {
 		VideoDetailCacheTTL:        getEnvDuration("VIDEO_DETAIL_CACHE_TTL", 10*time.Minute),
 		RateLimitWindow:            getEnvDuration("RATE_LIMIT_WINDOW", time.Minute),
 		RabbitMQURL:                getEnv("RABBITMQ_URL", "amqp://feed:feed@127.0.0.1:5672/"),
-		RabbitMQExchange:           getEnv("RABBITMQ_EXCHANGE", "feed.events"),
-		RabbitMQQueue:              getEnv("RABBITMQ_QUEUE", "feed.events"),
-		RabbitMQRoutingKey:         getEnv("RABBITMQ_ROUTING_KEY", "feed.event"),
-		RabbitMQRetryQueue:         getEnv("RABBITMQ_RETRY_QUEUE", "feed.events.retry"),
-		RabbitMQDLQ:                getEnv("RABBITMQ_DEAD_LETTER_QUEUE", "feed.events.dlq"),
 		RabbitMQCommandExchange:    getEnv("RABBITMQ_COMMAND_EXCHANGE", "feed.interaction.commands"),
 		RabbitMQLikeRoutingKey:     getEnv("RABBITMQ_LIKE_ROUTING_KEY", "interaction.command.like"),
 		RabbitMQCommentRoutingKey:  getEnv("RABBITMQ_COMMENT_ROUTING_KEY", "interaction.command.comment"),
@@ -102,15 +97,6 @@ func (c Config) Validate() error {
 	}
 	if c.RabbitMQURL == "" {
 		return fmt.Errorf("rabbitmq url is required")
-	}
-	if c.RabbitMQExchange == "" {
-		return fmt.Errorf("rabbitmq exchange is required")
-	}
-	if c.RabbitMQQueue == "" {
-		return fmt.Errorf("rabbitmq queue is required")
-	}
-	if c.RabbitMQRoutingKey == "" {
-		return fmt.Errorf("rabbitmq routing key is required")
 	}
 	if c.RabbitMQCommandExchange == "" {
 		return fmt.Errorf("rabbitmq command exchange is required")
